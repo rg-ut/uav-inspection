@@ -5,7 +5,7 @@
 
 ## 安装场景
 
-下载 [场景 Release](https://github.com/rg-ut/uav-inspection/releases/tag/fendai-scene-v1)
+下载 [场景 Release](https://github.com/DavidSMET/uav-inspection/releases/tag/fendai-scene-v1)
 中的 `fendai-flower.ksplat`，或者在仓库根目录运行：
 
 ```bash

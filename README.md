@@ -153,7 +153,7 @@ location ^~ /uav/ {
 浏览器通过 Three.js + GaussianSplats3D 加载已有 KSplat 场景，支持 WASD、鼠标转向、
 升降、加速、重置、全屏与手机触控。基础后端即可提供模型，无需安装推理依赖、CUDA 或 Unity。
 
-模型独立发布在 [粉黛场景 Release](https://github.com/rg-ut/uav-inspection/releases/tag/fendai-scene-v1)，
+模型独立发布在 [粉黛场景 Release](https://github.com/DavidSMET/uav-inspection/releases/tag/fendai-scene-v1)，
 约 98.74 MB，1,370,364 个高斯点，不进入代码仓库与 Docker 镜像。
 从仓库根目录安装到源码默认数据位置：
 
