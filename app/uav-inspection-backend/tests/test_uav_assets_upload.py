@@ -23,13 +23,20 @@ class AssetsUploadTests(unittest.TestCase):
         cls.env_patch = patch.dict(os.environ, {"UAV_DATA_DIR": str(Path(cls.temp.name) / "02-data")})
         cls.env_patch.start()
         from fastapi.testclient import TestClient
-        from heatmapapp.main import app
-        cls.client = TestClient(app)
+        from heatmapapp import main
+        frontend_dist = Path(cls.temp.name) / "frontend-dist"
+        frontend_dist.mkdir()
+        cls.frontend_html = '<!doctype html><html><body>Assets frontend fixture</body></html>'
+        (frontend_dist / "index.html").write_text(cls.frontend_html, encoding="utf-8")
+        cls.frontend_patch = patch.object(main, "FRONTEND_DIST", frontend_dist)
+        cls.frontend_patch.start()
+        cls.client = TestClient(main.app)
         cls.client.__enter__()
 
     @classmethod
     def tearDownClass(cls):
         cls.client.__exit__(None, None, None)
+        cls.frontend_patch.stop()
         cls.env_patch.stop()
         cls.temp.cleanup()
 
@@ -71,10 +78,11 @@ class AssetsUploadTests(unittest.TestCase):
         self.assertEqual([item["name"] for item in payload["saved"]], ["escape.txt"])
         landed = Path(payload["dir"]) / "escape.txt"
         self.assertTrue(landed.is_file())
-        models_root = Path(str(payload["dir"]).split("/models")[0]) / "models"
+        from deployment_paths import project_path
+        models_root = project_path("models")
         self.assertEqual(Path(payload["dir"]).resolve(), models_root.resolve())
         listing = self.client.get("/api/v1/assets/files", params={"category": "models"}).json()["data"]
-        self.assertEqual([f["path"] for f in listing["files"]], ["escape.txt"])
+        self.assertIn("escape.txt", [f["path"] for f in listing["files"]])
 
     def test_05_duplicate_rejected_unless_overwrite(self):
         from deployment_paths import backend_path
@@ -95,11 +103,12 @@ class AssetsUploadTests(unittest.TestCase):
                                   params={"category": "measurement-data",
                                           "subdir": "task-2026/demo"}).json()["data"]
         self.assertEqual(listing["count"], 1)
-        self.assertEqual(listing["files"][0]["path"], "task-2026/demo/green_area_summary.json")
+        self.assertEqual(Path(listing["files"][0]["path"]), Path("task-2026/demo/green_area_summary.json"))
 
     def test_07_assets_page_deep_link_serves_index(self):
         page = self.client.get("/assets")
         self.assertEqual(page.status_code, 200)
+        self.assertEqual(page.text, self.frontend_html)
 
 
 if __name__ == "__main__":

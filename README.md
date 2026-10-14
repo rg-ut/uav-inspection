@@ -3,16 +3,16 @@
 # 🚁 UAV Inspection Platform
 
 **低空智能巡检与决策平台** — 一个 FastAPI + Vue 3 的无人机巡检演示系统：
-单容器部署、11 个业务模块、WebSocket 实时推理流、内置素材上传中心。
+单容器部署、12 个业务模块、WebSocket 实时推理流、内置素材上传中心。
 
 [![Python](https://img.shields.io/badge/python-3.10--3.13-3776AB?logo=python&logoColor=white)](https://www.python.org)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.1xx-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
 [![Vue](https://img.shields.io/badge/Vue-3-4FC08D?logo=vuedotjs&logoColor=white)](https://vuejs.org)
-[![Vite](https://img.shields.io/badge/Vite-5-646CFF?logo=vite&logoColor=white)](https://vitejs.dev)
+[![Vite](https://img.shields.io/badge/Vite-8-646CFF?logo=vite&logoColor=white)](https://vitejs.dev)
 [![Docker](https://img.shields.io/badge/deploy-docker%20compose-2496ED?logo=docker&logoColor=white)](deploy/)
 [![License](https://img.shields.io/badge/license-MIT-green)](#license)
 
-*首页 · 三大业务分组，11 个巡检模块*
+*首页 · 三大业务分组，12 个业务模块（截图为加入粉黛花漫游前的界面）*
 
 ![home](docs/screenshots/home.png)
 
@@ -31,10 +31,11 @@
 | 🌱 农林植保业务 | 病虫害巡检 | 智能监测、自动告警、Agent 对话 |
 | | 乔木修剪检测 | 修剪识别、状态分析 |
 | | 树高测量 / 绿化面积 | 点云测量（PDAL 管线） |
-| 🌹 数字园区治理 | 数字玫瑰园 | 全息要素、数字档案（粉黛花场景） |
+| 🌹 数字园区治理 | 数字玫瑰园 | 地块态势、数字档案（演示数据） |
+| | 粉黛花三维漫游 | 3D Gaussian Splatting 场景、第一人称与触控漫游 |
 | | 玫瑰花产量估计 | 产量回归 |
 | | 热力客流监测 | 人员分布、聚集预警（实时推理流） |
-| 📦 素材管理 | **素材上传中心** | 10 分类白名单上传、子目录组织、防覆盖开关 |
+| 📦 素材管理 | **素材上传中心** | 11 分类白名单上传、子目录组织、防覆盖开关 |
 
 ### 设计特点
 
@@ -144,7 +145,32 @@ location ^~ /uav/ {
 1. **页面**：部署后访问 `/assets`（首页「素材管理」分组入口），分类下拉自带目标目录提示，默认重名跳过不覆盖
 2. **API**：`POST /api/v1/assets/upload`（multipart：`category` + 可选 `subdir` + `files[]`）；`GET /api/v1/assets/categories` 拉分类清单，`GET /api/v1/assets/files?category=...` 看目录内容
 
-安全设计：10 分类**白名单**（未知分类 422）、子目录逐段校验拒路径穿越、文件名 basename + 控制字符清洗、`overwrite=true` 才允许覆盖已有文件。
+安全设计：11 分类**白名单**（未知分类 422）、子目录逐段校验拒路径穿越、文件名 basename + 控制字符清洗、`overwrite=true` 才允许覆盖已有文件。
+
+## 粉黛花三维漫游
+
+首页“数字园区治理”中的“粉黛花三维漫游”进入 `/fendai-flower`。
+浏览器通过 Three.js + GaussianSplats3D 加载已有 KSplat 场景，支持 WASD、鼠标转向、
+升降、加速、重置、全屏与手机触控。基础后端即可提供模型，无需安装推理依赖、CUDA 或 Unity。
+
+模型独立发布在 [粉黛场景 Release](https://github.com/rg-ut/uav-inspection/releases/tag/fendai-scene-v1)，
+约 98.74 MB，1,370,364 个高斯点，不进入代码仓库与 Docker 镜像。
+从仓库根目录安装到源码默认数据位置：
+
+```bash
+python app/scripts/install_fendai_scene.py
+```
+
+脚本下载后检查大小与 SHA-256，再安装到
+`app/uav-inspection-backend/fendaidata/scenes/fendai-flower.ksplat`。
+使用外置数据时加 `--data-dir`，与服务的 `UAV_DATA_DIR` 保持一致。
+也可下载模型后在素材上传中心选择“粉黛花三维场景（.ksplat）”，子目录留空并上传原文件名。
+缺模型时页面显示安装指引；上传后重新进入即可。
+
+接口、Docker 数据卷安装、子路径配置、文件校验和功能边界见
+[粉黛花部署说明](app/docs/fendai-flower.md)。
+
+![粉黛花三维漫游](docs/screenshots/fendai-walkthrough.png)
 
 ### 大文件分片上传（断点续传）
 

@@ -22,7 +22,7 @@ from pathlib import Path
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import JSONResponse
 
-from deployment_paths import DATA_ROOT
+from deployment_paths import DATA_ROOT, backend_path
 
 router = APIRouter()
 
@@ -40,6 +40,7 @@ CATEGORIES: dict[str, Path] = {
     'rose-pictures': DATA_ROOT / 'uav-inspection-ui' / 'public' / 'rose-pictures',
     'measurement-data': DATA_ROOT / 'measurement_data',
     'models': DATA_ROOT / 'models',
+    'fendai-scenes': backend_path('fendaidata', 'scenes'),
 }
 
 FORBIDDEN_NAME = re.compile(r'[\x00-\x1f\x7f]')
@@ -85,6 +86,7 @@ async def list_categories():
                 ('rose-pictures', '玫瑰园照片（rose-pictures）'),
                 ('measurement-data', '测量结果（measurement_data）'),
                 ('models', '其他模型（models）'),
+                ('fendai-scenes', '粉黛花三维场景（.ksplat）'),
             )
         ],
     }

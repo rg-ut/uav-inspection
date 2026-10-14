@@ -112,6 +112,7 @@ class OptionalDeploymentTests(unittest.TestCase):
     def test_02_status_and_empty_measurements(self):
         status = self.client.get("/api/deployment/status").json()["data"]
         self.assertFalse(status["data_available"])
+        self.assertFalse(status["fendai_scene_available"])
         self.assertFalse(status["inference_dependencies_installed"])
         self.assertFalse(status["inference_available"])
         overview = self.client.get("/api/v1/vegetation/overview")
@@ -181,7 +182,8 @@ class OptionalDeploymentTests(unittest.TestCase):
 
     def test_07_frontend_routes_assets_and_path_boundary(self):
         for route in ("/", "/telecom", "/pest", "/heatmap-flow", "/power", "/roof", "/wall",
-                      "/pruning", "/height", "/area", "/rose-digital", "/rose-yield", "/height/"):
+                      "/pruning", "/height", "/area", "/rose-digital", "/rose-yield", "/height/",
+                      "/fendai-flower", "/fendai-flower/"):
             with self.subTest(route=route):
                 response = self.client.get(route)
                 self.assertEqual(response.status_code, 200)
@@ -207,6 +209,110 @@ class OptionalDeploymentTests(unittest.TestCase):
         response = self.client.get("/rose-pictures/sample.jpg")
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.content, b"picture-fixture")
+
+    def test_09_missing_fendai_scene_is_actionable_without_ai(self):
+        response = self.client.get("/api/v1/fendai/scene")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"code": 200, "data": {
+            "id": "fendai-flower", "title": "粉黛花漫游",
+            "model_url": "/api/v1/fendai/model", "available": False,
+            "point_count": 1370364, "training_iterations": 30000,
+        }})
+        missing = self.client.get("/api/v1/fendai/model")
+        self.assertEqual(missing.status_code, 404)
+        self.assertIn("素材上传", missing.json()["detail"])
+        self.assertIn("fendai-flower.ksplat", missing.json()["detail"])
+        self.assertEqual(self.client.head("/api/v1/fendai/model").status_code, 404)
+        self.assertNotIn("torch", sys.modules)
+        self.assertNotIn("ultralytics", sys.modules)
+
+    def test_10_fendai_upload_file_head_and_range_use_dedicated_data(self):
+        from deployment_paths import backend_path, project_path
+        target = backend_path("fendaidata", "scenes", "fendai-flower.ksplat")
+        self.assertTrue(target.is_relative_to(self.data_root))
+        categories = self.client.get("/api/v1/assets/categories").json()["data"]
+        category = next(item for item in categories if item["key"] == "fendai-scenes")
+        self.assertEqual(category["label"], "粉黛花三维场景（.ksplat）")
+        self.assertEqual(Path(category["target"]), Path("uav-inspection-backend/fendaidata/scenes"))
+        content = b"\x00\x01\x00\x00fendai-binary-fixture\xff"
+        private_model = project_path("models", "private.pt")
+        private_model.parent.mkdir(parents=True, exist_ok=True)
+        private_model.write_bytes(b"DO NOT EXPOSE")
+        try:
+            upload = self.client.post("/api/v1/assets/upload",
+                data={"category": "fendai-scenes"},
+                files={"files": (target.name, content, "application/octet-stream")})
+            self.assertEqual(upload.status_code, 200, upload.text)
+            self.assertEqual(target.read_bytes(), content)
+            self.assertTrue(self.client.get("/api/v1/fendai/scene").json()["data"]["available"])
+            self.assertTrue(self.client.get("/api/deployment/status").json()["data"]["fendai_scene_available"])
+            model = self.client.get("/api/v1/fendai/model")
+            self.assertEqual(model.status_code, 200)
+            self.assertEqual(model.content, content)
+            self.assertEqual(model.headers["content-type"], "application/octet-stream")
+            head = self.client.head("/api/v1/fendai/model")
+            self.assertEqual(head.status_code, 200)
+            self.assertEqual(head.content, b"")
+            self.assertEqual(head.headers["content-length"], str(len(content)))
+            partial = self.client.get("/api/v1/fendai/model", headers={"Range": "bytes=4-9"})
+            self.assertEqual(partial.status_code, 206)
+            self.assertEqual(partial.content, content[4:10])
+            for path in ("/models/private.pt", "/api/v1/fendai/model/private.pt",
+                         "/api/v1/fendai/models/private.pt"):
+                with self.subTest(path=path):
+                    self.assertEqual(self.client.get(path).status_code, 404)
+        finally:
+            target.unlink(missing_ok=True)
+            private_model.unlink(missing_ok=True)
+
+    def test_11_chunked_fendai_upload_becomes_available_only_after_complete(self):
+        from assetsapp import api as assets_api
+        from deployment_paths import backend_path
+        target = backend_path("fendaidata", "scenes", "fendai-flower.ksplat")
+        content = bytes(range(40))
+        with patch.object(assets_api, "CHUNK_SIZE", 16):
+            upload = self.client.post("/api/v1/assets/upload/init", data={
+                "category": "fendai-scenes", "filename": target.name, "size": str(len(content)),
+            })
+            self.assertEqual(upload.status_code, 200)
+            data = upload.json()["data"]
+            self.assertEqual(data["totalChunks"], 3)
+            try:
+                for index in range(3):
+                    response = self.client.post("/api/v1/assets/upload/chunk",
+                        data={"upload_id": data["uploadId"], "index": str(index)},
+                        files={"file": ("chunk", content[index * 16:(index + 1) * 16])})
+                    self.assertEqual(response.status_code, 200)
+                self.assertFalse(self.client.get("/api/v1/fendai/scene").json()["data"]["available"])
+                complete = self.client.post("/api/v1/assets/upload/complete",
+                    data={"upload_id": data["uploadId"]})
+                self.assertEqual(complete.status_code, 200, complete.text)
+                self.assertEqual(target.read_bytes(), content)
+                self.assertTrue(self.client.get("/api/v1/fendai/scene").json()["data"]["available"])
+                self.assertEqual(self.client.get("/api/v1/fendai/model").content, content)
+            finally:
+                target.unlink(missing_ok=True)
+
+    def test_12_fendai_url_prefix_works_through_gateway_mount(self):
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+        from heatmapapp.main import app
+        from deployment_paths import backend_path
+        import uav_url_prefix
+        target = backend_path("fendaidata", "scenes", "fendai-flower.ksplat")
+        target.write_bytes(b"prefixed-scene-fixture")
+        gateway = FastAPI()
+        gateway.mount("/uav", app)
+        try:
+            with patch.object(uav_url_prefix, "_PREFIX", "/uav"), TestClient(gateway) as client:
+                scene = client.get("/uav/api/v1/fendai/scene").json()["data"]
+                self.assertEqual(scene["model_url"], "/uav/api/v1/fendai/model")
+                self.assertEqual(client.get(scene["model_url"]).content, b"prefixed-scene-fixture")
+                page = client.get("/uav/fendai-flower")
+                self.assertEqual(page.status_code, 200)
+                self.assertEqual(page.text, self.frontend_html)
+        finally:
+            target.unlink(missing_ok=True)
 
 
 if __name__ == "__main__":

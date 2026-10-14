@@ -112,6 +112,13 @@ const modules = [
         icon: Users,
         desc: ['人员分布', '聚集预警'],
       },
+      {
+        name: '粉黛花三维漫游',
+        path: '/fendai-flower',
+        theme: 'roseDigital',
+        icon: Camera,
+        desc: ['高斯模型', '第一人称漫游'],
+      },
     ],
   },
   {

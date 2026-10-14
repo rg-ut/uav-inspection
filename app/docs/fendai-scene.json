@@ -1,0 +1,12 @@
+{
+  "id": "fendai-flower",
+  "filename": "fendai-flower.ksplat",
+  "download_url": "https://github.com/rg-ut/uav-inspection/releases/download/fendai-scene-v1/fendai-flower.ksplat",
+  "bytes": 98735796,
+  "sha256": "101b60a7033cbf7d740c74b33d8be3f9ce358134e6de6521a03e7d42c0ce32f8",
+  "format": "ksplat",
+  "format_version": "0.1",
+  "compression_level": 1,
+  "point_count": 1370364,
+  "training_iterations": 30000
+}

@@ -56,7 +56,7 @@ RUNTIME_DIRS = (
     "heatmapdata/videos", "heatmapdata/snapshots", "heatmapdata/logs",
     "pestdata", "powerdata", "roofdata", "telecomdata", "treedata",
     "walldata/media", "walldata/logs", "walldata/reports", "rose-tasks",
-    "telecom-tasks",
+    "telecom-tasks", "fendaidata/scenes",
 )
 DATA_ASSET_SUFFIXES = {".csv", ".json", ".png", ".jpg", ".jpeg"}
 DATA_README = """# 可选运行数据包
@@ -86,6 +86,10 @@ DATA_README = """# 可选运行数据包
 
 `uav-inspection-ui/public/images` 中的底图和瓦片是保留的离线素材备份，
 当前界面未使用这些文件，地图使用外部地图服务；无需额外配置静态文件挂载。
+
+粉黛花漫游模型放在 `uav-inspection-backend/fendaidata/scenes/fendai-flower.ksplat`。
+缺少时可用素材上传中心的“粉黛花三维场景”分类补充，或按
+01-app/docs/fendai-flower.md 下载并校验。该场景展示不需要安装 AI 推理依赖。
 
 若程序已经生成空的 02-data，把收到的数据合并进去，再重启程序。
 已有上传文件与新数据重名时先备份、核对，不要直接覆盖。
@@ -197,6 +201,9 @@ def collect_files(root: Path, include_data: bool = True) -> list[Entry]:
                 add(path, "app")
         for path in walk_files(frontend / "src"):
             if path.suffix.lower() in TEXT_SOURCE_SUFFIXES | UI_ASSET_SUFFIXES:
+                add(path, "app")
+        for path in walk_files(frontend / "tests"):
+            if path.suffix.lower() in TEXT_SOURCE_SUFFIXES:
                 add(path, "app")
         for path in walk_files(frontend / "public"):
             if path.relative_to(frontend / "public").parts[0] not in {"rose-pictures", "images"}:
