@@ -46,12 +46,14 @@ class DeliveryBuilderTests(unittest.TestCase):
             "uav-inspection-ui/index.html", "uav-inspection-ui/vite.config.ts",
             "uav-inspection-ui/tsconfig.app.json", "uav-inspection-ui/src/App.vue",
             "uav-inspection-ui/src/assets/icon.svg", "uav-inspection-ui/public/favicon.svg",
+            "uav-inspection-ui/tests/webroot.test.mjs",
         ]
         data_files = [
             "uav-inspection-backend/heatmapdata/videos/video.mp4",
             "uav-inspection-backend/heatmapdata/videos/video.srt",
             "uav-inspection-backend/heatmapdata/snapshots/frame.jpg",
             "uav-inspection-backend/pestdata/mock_track.json",
+            "uav-inspection-backend/fendaidata/scenes/fendai-flower.ksplat",
             "uav-inspection-backend/walldata/media/wall.mp4",
             "uav-inspection-backend/walldata/logs/logs.json",
             "uav-inspection-backend/wallapp/wall_damage_dataset/metadata.json",
@@ -74,6 +76,7 @@ class DeliveryBuilderTests(unittest.TestCase):
             ".env", ".venv/Lib/code.py", "node_modules/test.js",
             "uav-inspection-backend/venv/Lib/code.py",
             "uav-inspection-backend/yolo11n.pt",
+            "uav-inspection-backend/fendaidata/training/raw.ply",
             "uav-inspection-backend/heatmapdata/debug_contact_sheets/frame.jpg",
             "uav-inspection-backend/roseapp/.env.production",
             "uav-inspection-backend/roseapp/runs/train/code.py",

@@ -9,11 +9,12 @@ function stripSlashes(p: string): string {
 }
 
 // 根绝对路径 → 带前缀路径；传入非根相对/完整 URL 原样返回
-export function webPath(absolutePath: string): string {
+export function webPath(absolutePath: string, baseUrl = BASE_URL): string {
   if (!absolutePath) return absolutePath
-  if (/^(https?:|data:|blob:)/i.test(absolutePath)) return absolutePath
+  if (/^(https?:|data:|blob:|\/\/)/i.test(absolutePath)) return absolutePath
   if (!absolutePath.startsWith('/')) return absolutePath
-  return `/${stripSlashes(BASE_URL)}/${stripSlashes(absolutePath)}`.replace(/\/+$/, '/')
+  const prefix = stripSlashes(baseUrl)
+  return `${prefix ? `/${prefix}` : ''}${absolutePath}`
 }
 
 // WebSocket：根绝对路径 → 带前缀的 ws(s) 完整 URL

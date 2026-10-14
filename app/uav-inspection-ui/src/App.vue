@@ -1,11 +1,15 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import DeploymentNotice from './components/common/DeploymentNotice.vue'
 
 const noticeVisible = ref(false)
+const route = useRoute()
+// This scene uses its own model availability notice and does not require inference packages.
+const showDeploymentNotice = computed(() => route.name !== 'fendai-flower')
 
-watch(noticeVisible, (v) => {
-  document.body.classList.toggle('notice-visible', v)
+watch([noticeVisible, showDeploymentNotice], ([visible, show]) => {
+  document.body.classList.toggle('notice-visible', visible && show)
 })
 </script>
 
@@ -13,7 +17,7 @@ watch(noticeVisible, (v) => {
   <div class="router-host">
     <router-view></router-view>
   </div>
-  <DeploymentNotice @visibility-change="noticeVisible = $event" />
+  <DeploymentNotice v-if="showDeploymentNotice" @visibility-change="noticeVisible = $event" />
 </template>
 
 <style>

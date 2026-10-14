@@ -8,7 +8,7 @@ services:
     restart: always
     environment:
       # 挂在反向代理子路径下时与 nginx 的前缀保持一致；根路径部署可置空
-      - UAV_URL_PREFIX=${UAV_URL_PREFIX:-/uav}
+      - UAV_URL_PREFIX=${UAV_URL_PREFIX-/uav}
       - UAV_DATA_DIR=/data
     ports:
       # 只绑回环，由 nginx 统一对外；如需直连可改为 "8002:8002"

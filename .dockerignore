@@ -1,0 +1,8 @@
+.git
+**/node_modules
+**/dist
+**/__pycache__
+**/.venv*
+app/02-data
+app/delivery
+app/uav-inspection-backend/fendaidata

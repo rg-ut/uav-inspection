@@ -8,5 +8,9 @@ __pycache__/
 # 运行时数据与密钥（数据在服务器命名卷，不进仓）
 deploy/.env
 app/02-data/
+app/uav-inspection-backend/fendaidata/
+app/uav-inspection-ui/node_modules/
+app/uav-inspection-ui/dist/
+app/delivery/
 *.log
 .DS_Store

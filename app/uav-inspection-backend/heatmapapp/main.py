@@ -19,6 +19,7 @@ from wallapp.api import detect as wall_detect
 from treeapp.api import detect as pruning_detect
 from vegetationapp import api as vegetation_api
 from assetsapp import api as assets_api
+from fendaiapp import api as fendai_api
 
 app = FastAPI(title='园区无人机巡检系统')
 
@@ -59,6 +60,7 @@ app.include_router(wall_detect.router, prefix='/api/v1/wall', tags=['建筑外�
 app.include_router(pruning_detect.router, prefix='/api/v1/pruning', tags=['乔木修剪检测'])
 app.include_router(vegetation_api.router, prefix='/api/v1/vegetation', tags=['乔木与绿化测量'])
 app.include_router(assets_api.router, prefix='/api/v1/assets', tags=['素材上传'])
+app.include_router(fendai_api.router, prefix='/api/v1/fendai', tags=['粉黛花漫游'])
 
 app.mount('/api/v1/pest/media', StaticFiles(directory=PEST_MEDIA_PATH), name='pest_media')
 app.mount('/api/v1/rose/tasks', StaticFiles(directory=ROSE_TASKS_PATH), name='rose_tasks')
@@ -107,8 +109,10 @@ async def deployment_status():
     media_suffixes = {'.mp4', '.avi', '.mov', '.mkv', '.webm'}
     has_video = any(p.suffix.lower() in media_suffixes for folder in media_roots for p in folder.rglob('*') if p.is_file())
     has_measurements = any(project_path('measurement_data').glob('*/green_area_summary.json'))
+    has_fendai_scene = fendai_api.scene_model_path().is_file()
     return {'code': 200, 'data': {
-        'data_available': has_video or has_measurements,
+        'data_available': has_video or has_measurements or has_fendai_scene,
+        'fendai_scene_available': has_fendai_scene,
         'inference_available': dependencies and any(models.values()),
         'inference_dependencies_installed': dependencies,
         'models': models,
@@ -150,7 +154,7 @@ async def frontend(path: str):
     if candidate.is_file():
         return FileResponse(candidate)
     spa_routes = {'telecom', 'pest', 'heatmap-flow', 'power', 'roof', 'wall', 'pruning',
-                  'height', 'area', 'rose-digital', 'rose-yield', 'assets'}
+                  'height', 'area', 'rose-digital', 'rose-yield', 'assets', 'fendai-flower'}
     if path.strip('/') in spa_routes and (FRONTEND_DIST / 'index.html').is_file():
         return FileResponse(FRONTEND_DIST / 'index.html')
     raise HTTPException(status_code=404, detail='页面或文件不存在；首次部署请先运行 setup。')
