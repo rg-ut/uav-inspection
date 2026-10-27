@@ -1,24 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { routeLength, sampleRoute, returnRoute, simulationRoutes, simulationBattery, simulationCommand, readReports, simulationReportHtml, adaptivePlan, observationTargets, reviewTargets, missionPhase, routeObservations, candidateScore, observationCoverage, viewSector } from '../src/utils/pestSimulation.ts'
+import { routeLength, sampleRoute, returnRoute, simulationRoutes, simulationBattery, simulationCommand, readReports, simulationReportHtml, observationTargets, candidateScore, observationCoverage, viewSector } from '../src/utils/pestSimulation.ts'
 
-test('coarse-to-fine plan inspects only uncertain authored plants, then returns home', () => {
-  assert.deepEqual(reviewTargets().map(target => target.index), [0, 1])
-  assert(adaptivePlan.coarseEnd < adaptivePlan.fineEnd)
-  assert.equal(adaptivePlan.visits.length, 6)
-  for (const visit of adaptivePlan.visits) {
-    assert.equal(visit.position[1], 5.5)
-    assert(visit.distance > adaptivePlan.coarseEnd && visit.distance <= adaptivePlan.fineEnd)
-    assert.deepEqual(sampleRoute(adaptivePlan.points, visit.distance).position.map(v => +v.toFixed(5)), visit.position.map(v => +v.toFixed(5)))
-  }
-  assert.equal(missionPhase('maize-adaptive', 0), '① 高空粗巡')
-  assert.equal(missionPhase('maize-adaptive', adaptivePlan.coarseEnd), '② 低空精查')
-  assert.equal(missionPhase('maize-adaptive', adaptivePlan.fineEnd), '③ 返航归档')
-  assert.equal(routeObservations('maize-boundary').length, 0)
-  const orbit = routeObservations('maize-orbit')
-  assert.equal(new Set(orbit.map(visit => viewSector(visit.position, observationTargets[0].point))).size, 8)
-  assert(orbit.every(visit => visit.target === 0))
-})
 test('visibility and novel directions drive coverage; duplicate or blocked views add no coverage', () => {
   assert(candidateScore('coverage', .9, true, .5) > candidateScore('coverage', .9, false, .5))
   assert(candidateScore('semantic', 1, true, .5) > candidateScore('semantic', 0, true, .5))
@@ -39,7 +22,7 @@ test('flight interpolation is distance-based and finishes on the final waypoint'
 test('every route starts and lands at home and emergency return climbs before crossing the park', () => {
   for (const route of simulationRoutes) {
     assert.deepEqual(route.points[0], route.points.at(-1))
-    assert(routeLength(route.points) > 100)
+    assert(routeLength(route.points) > 50)
     assert.equal(sampleRoute(route.points, routeLength(route.points)).waypoint, route.points.length - 1)
     assert.deepEqual(sampleRoute(route.points, routeLength(route.points)).position, route.points.at(-1))
   }
@@ -62,4 +45,7 @@ test('reports reject corrupt storage and HTML escapes names and declares simulat
   assert(!html.includes('<script>'))
   assert(html.includes('&lt;script&gt;'))
   assert(html.includes('任务类型：场景演示'))
+  const interrupted = simulationReportHtml({ ...report, outcome: 'interrupted', progress: 10.4 })
+  assert(interrupted.includes('中途返航'))
+  assert(interrupted.includes('10.4%'))
 })

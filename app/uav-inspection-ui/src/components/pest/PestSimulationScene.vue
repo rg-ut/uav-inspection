@@ -3,24 +3,23 @@ import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import * as THREE from 'three'
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
-import { observationTargets, candidateScore, viewSector, type ViewStrategy, type Position3, type ViewpointResult } from '../../utils/pestSimulation'
+import { observationTargets, candidateScore, viewSector, type PlantObservation, type ViewStrategy, type Position3, type ViewpointResult } from '../../utils/pestSimulation'
 
-const props = defineProps<{ points: Position3[]; position: Position3; heading: number; running: boolean; cameraMode: string; targetIndex: number; strategy: ViewStrategy; visitedSectors: number[] }>()
+const props = defineProps<{ points: Position3[]; position: Position3; heading: number; running: boolean; cameraMode: string; targetIndex: number; activeTarget: number | null; plannedView: ViewpointResult | null; historyPath: Position3[] }>()
 const emit = defineEmits<{ advance: [seconds: number]; ready: []; error: [message: string]; suspend: [] }>()
 const host = ref<HTMLDivElement | null>(null)
 const error = ref('')
 let renderer: THREE.WebGLRenderer | undefined
 let scene: THREE.Scene, camera: THREE.PerspectiveCamera, controls: OrbitControls
-let drone: THREE.Group, routeLine: THREE.Line, marker: THREE.Mesh
+let drone: THREE.Group, routeLine: THREE.Line, trailLine: THREE.Line, marker: THREE.Mesh, viewpointMarker: THREE.Mesh, onboardCamera: THREE.PerspectiveCamera
 const rotors: THREE.Mesh[] = [], obstacles: THREE.Object3D[] = []
 let resize: ResizeObserver | undefined, frame = 0, previousTime = 0, disposed = false
-let transition: { start: number; from: THREE.Vector3; to: THREE.Vector3; targetFrom: THREE.Vector3; target: THREE.Vector3; result: ViewpointResult; finish: (result: ViewpointResult | null) => void } | null = null
 function leafFocus(index: number) {
   const [x, , z] = observationTargets[index]!.point
   const variation = 1 + Math.sin(x * 7 + z * 3) * .07, angle = 7.2 + x * .1
   return new THREE.Vector3(x + Math.cos(angle) * 1.3 * variation * .94, 3.06 * variation, z - Math.sin(angle) * 1.3 * variation * .94)
 }
-const targetPoint = () => leafFocus(props.targetIndex)
+const targetPoint = () => leafFocus(props.activeTarget ?? props.targetIndex)
 
 function mesh(geometry: THREE.BufferGeometry, color: number, x: number, y: number, z: number, parent: THREE.Object3D = scene) {
   const object = new THREE.Mesh(geometry, new THREE.MeshStandardMaterial({ color, roughness: .85 }))
@@ -33,10 +32,16 @@ function updateRoute() {
   routeLine = new THREE.Line(new THREE.BufferGeometry().setFromPoints(props.points.map(p => new THREE.Vector3(...p))), new THREE.LineBasicMaterial({ color: 0x36d5bc, transparent: true, opacity: .9 }))
   scene.add(routeLine)
 }
-function updateTarget() { if (marker) { const [x, , z] = observationTargets[props.targetIndex]!.point; marker.position.set(x, .3, z) } }
+function updateTarget() { if (marker) { const [x, , z] = observationTargets[props.activeTarget ?? props.targetIndex]!.point; marker.position.set(x, .3, z) } }
+function updateTrail() {
+  if (!scene) return
+  if (!trailLine) { trailLine = new THREE.Line(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ color: 0xe9567c })); scene.add(trailLine) }
+  trailLine.geometry.dispose(); trailLine.geometry = new THREE.BufferGeometry().setFromPoints(props.historyPath.map(p => new THREE.Vector3(...p)))
+}
+function updatePlannedView() { if (viewpointMarker) { viewpointMarker.visible = Boolean(props.plannedView); if (props.plannedView) viewpointMarker.position.set(...props.plannedView.position) } }
+
 function resetView() {
   if (!camera) return
-  transition?.finish(null); transition = null
   camera.position.set(46, 37, 45); controls.target.set(0, 1, -4); controls.update()
 }
 function occlusion(position: THREE.Vector3, target: THREE.Vector3) {
@@ -50,24 +55,26 @@ function occlusion(position: THREE.Vector3, target: THREE.Vector3) {
   }
   return blocked / 9
 }
-function optimizeView(): Promise<ViewpointResult | null> {
-  if (!renderer || disposed) return Promise.resolve(null)
-  transition?.finish(null)
+function planView(targetIndex: number, origin: Position3, strategy: ViewStrategy, observations: PlantObservation[], avoidedSectors: number[] = []): ViewpointResult | null {
+  if (!renderer || disposed) return null
   scene.updateMatrixWorld(true)
-  const target = targetPoint(), before = occlusion(camera.position, target)
-  const candidates = Array.from({ length: 36 }, (_, index) => {
+  const target = leafFocus(targetIndex), plant = observationTargets[targetIndex]!, before = occlusion(new THREE.Vector3(...origin), target)
+  const seen = new Set(observations.filter(o => o.target === targetIndex && o.visible >= .5).map(o => o.sector))
+  const attempted = new Set(observations.filter(o => o.target === targetIndex).map(o => o.sector))
+  let candidates = Array.from({ length: 36 }, (_, index) => {
     const angle = index % 12 * Math.PI / 6
-    const position = target.clone().add(new THREE.Vector3(Math.cos(angle) * 6, [1, 2.6, 4.2][Math.floor(index / 12)]!, Math.sin(angle) * 6))
-    const blocked = occlusion(position, target), sector = viewSector(position.toArray() as Position3, observationTargets[props.targetIndex]!.point)
-    return { position, blocked, sector, score: candidateScore(props.strategy, 1 - blocked, !props.visitedSectors.includes(sector), observationTargets[props.targetIndex]!.cue) }
-  })
-  if (props.strategy !== 'fixed') candidates.sort((a, b) => b.score - a.score || a.blocked - b.blocked)
-  const best = candidates[0]!, destination = best.position
-  const direction = target.clone().sub(destination)
-  const result: ViewpointResult = { before, after: best.blocked, candidates: props.strategy === 'fixed' ? 1 : candidates.length, position: destination.toArray() as Position3, strategy: props.strategy, target: props.targetIndex, sector: best.sector, yaw: Math.atan2(direction.x, direction.z) * 180 / Math.PI, pitch: Math.atan2(direction.y, Math.hypot(direction.x, direction.z)) * 180 / Math.PI }
-  return new Promise(resolve => {
-    transition = { start: performance.now(), from: camera.position.clone(), to: destination, targetFrom: controls.target.clone(), target, result, finish: resolve }
-  })
+    // Flight poses remain above the maize canopy; the gimbal looks down at the leaf ROI.
+    const position = new THREE.Vector3(plant.point[0] + Math.cos(angle) * 6, [6.2, 7.2, 8.2][Math.floor(index / 12)]!, plant.point[2] + Math.sin(angle) * 6)
+    const blocked = occlusion(position, target), sector = viewSector(position.toArray() as Position3, plant.point)
+    return { position, blocked, sector, index, score: candidateScore(strategy, 1 - blocked, !seen.has(sector), plant.cue) - Math.min(.15, position.distanceTo(new THREE.Vector3(...origin)) / 300) }
+  }).filter(candidate => !seen.has(candidate.sector) && !avoidedSectors.includes(candidate.sector))
+  const fresh = candidates.filter(candidate => !attempted.has(candidate.sector))
+  if (fresh.length) candidates = fresh
+  if (!candidates.length) return null
+  if (strategy === 'fixed') candidates.sort((a, b) => a.index - b.index)
+  else candidates.sort((a, b) => b.score - a.score || a.blocked - b.blocked)
+  const best = candidates[0]!, direction = target.clone().sub(best.position)
+  return { before, after: best.blocked, candidates: strategy === 'fixed' ? 1 : candidates.length, position: best.position.toArray() as Position3, strategy, target: targetIndex, sector: best.sector, yaw: Math.atan2(direction.x, direction.z) * 180 / Math.PI, pitch: Math.atan2(direction.y, Math.hypot(direction.x, direction.z)) * 180 / Math.PI }
 }
 function changeCamera() {
   if (!camera) return
@@ -82,6 +89,7 @@ onMounted(() => {
   try {
     scene = new THREE.Scene(); scene.background = new THREE.Color(0xdbe9e5); scene.fog = new THREE.Fog(0xdbe9e5, 110, 200)
     camera = new THREE.PerspectiveCamera(48, 1, .1, 260)
+    onboardCamera = new THREE.PerspectiveCamera(58, 1.6, .1, 220)
     renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true })
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.7)); renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFSoftShadowMap
     renderer.outputColorSpace = THREE.SRGBColorSpace
@@ -171,7 +179,9 @@ onMounted(() => {
     }
     mesh(new THREE.SphereGeometry(.3, 8, 6), 0x21352f, 0, -.45, .6, drone)
     marker = mesh(new THREE.TorusGeometry(1.3, .12, 8, 32), 0xf5b951, 0, 0, 0); marker.rotation.x = Math.PI / 2
-    updateRoute(); updateTarget(); resetView()
+    viewpointMarker = mesh(new THREE.SphereGeometry(.55, 12, 8), 0xe9567c, 0, 0, 0)
+    ;(viewpointMarker.material as THREE.MeshStandardMaterial).wireframe = true
+    updateRoute(); updateTrail(); updateTarget(); updatePlannedView(); resetView()
     resize = new ResizeObserver(() => {
       if (!host.value || !renderer) return
       const { width, height } = host.value.getBoundingClientRect()
@@ -187,23 +197,37 @@ onMounted(() => {
       drone.position.set(...props.position); drone.rotation.y = THREE.MathUtils.degToRad(props.heading)
       if (props.running) rotors.forEach((rotor, index) => rotor.rotation.y += dt * (index % 2 ? -65 : 65))
       marker.rotation.z += dt * .4
-      if (transition) {
-        const t = Math.min(1, (time - transition.start) / 1000), eased = t * t * (3 - 2 * t)
-        camera.position.lerpVectors(transition.from, transition.to, eased); controls.target.lerpVectors(transition.targetFrom, transition.target, eased)
-        if (t >= 1) { const done = transition; transition = null; done.finish(done.result) }
+      if (props.cameraMode === 'observation' && props.activeTarget !== null) {
+        camera.position.copy(drone.position).add(new THREE.Vector3(0, -.25, 0)); controls.target.copy(targetPoint())
       } else if (props.cameraMode === 'follow') {
         const position = drone.position.clone(); camera.position.lerp(position.clone().add(new THREE.Vector3(10, 7, 14)), Math.min(1, dt * 3)); controls.target.lerp(position, Math.min(1, dt * 5))
       }
+      controls.enabled = props.cameraMode !== 'observation'
+      const size = renderer.getSize(new THREE.Vector2())
+      renderer.setScissorTest(false); renderer.setViewport(0, 0, size.x, size.y)
+      drone.visible = props.cameraMode !== 'observation'; viewpointMarker.visible = Boolean(props.plannedView) && props.cameraMode !== 'observation'
       controls.update(); renderer.render(scene, camera)
+      drone.visible = true; viewpointMarker.visible = Boolean(props.plannedView)
+      if (props.activeTarget !== null && props.cameraMode !== 'observation') {
+        const width = size.x < 500 ? 144 : 224, height = size.x < 500 ? 96 : 140, top = size.x < 500 ? 110 : 65
+        onboardCamera.aspect = width / height; onboardCamera.updateProjectionMatrix()
+        onboardCamera.position.copy(drone.position).add(new THREE.Vector3(0, -.25, 0)); onboardCamera.lookAt(targetPoint())
+        renderer.setViewport(size.x - width - 16, size.y - top - height, width, height); renderer.setScissor(size.x - width - 16, size.y - top - height, width, height)
+        drone.visible = false; viewpointMarker.visible = false
+        renderer.setScissorTest(true); renderer.clearDepth(); renderer.render(scene, onboardCamera); renderer.setScissorTest(false)
+        drone.visible = true; viewpointMarker.visible = Boolean(props.plannedView)
+      }
     }
     frame = requestAnimationFrame(animate); emit('ready')
   } catch (reason) { error.value = `无法初始化三维场景：${reason instanceof Error ? reason.message : 'WebGL 不可用'}`; emit('error', error.value) }
 })
 watch(() => props.points, updateRoute)
-watch(() => props.targetIndex, updateTarget)
+watch(() => [props.targetIndex, props.activeTarget], updateTarget)
+watch(() => props.plannedView, updatePlannedView)
+watch(() => props.historyPath, updateTrail)
 watch(() => props.cameraMode, changeCamera)
 onBeforeUnmount(() => {
-  disposed = true; cancelAnimationFrame(frame); resize?.disconnect(); transition?.finish(null); transition = null
+  disposed = true; cancelAnimationFrame(frame); resize?.disconnect()
   document.removeEventListener('visibilitychange', visibilityChange); controls?.dispose()
   const geometries = new Set<THREE.BufferGeometry>(), materials = new Set<THREE.Material>()
   scene?.traverse(object => { if (object instanceof THREE.InstancedMesh) object.dispose(); if (object instanceof THREE.DirectionalLight) object.shadow.dispose(); if (object instanceof THREE.Sprite) { object.material.map?.dispose(); materials.add(object.material) } if (object instanceof THREE.Mesh || object instanceof THREE.Line) { geometries.add(object.geometry); for (const material of Array.isArray(object.material) ? object.material : [object.material]) materials.add(material) } })
@@ -211,7 +235,7 @@ onBeforeUnmount(() => {
   renderer?.domElement.removeEventListener('webglcontextlost', contextLost); renderer?.dispose(); renderer?.domElement.remove(); renderer = undefined
 })
 function observePlant(index: number, position: Position3) { if (!scene) return 0; scene.updateMatrixWorld(true); return 1 - occlusion(new THREE.Vector3(...position), leafFocus(index)) }
-defineExpose({ optimizeView, resetView, observePlant })
+defineExpose({ planView, resetView, observePlant })
 </script>
 
 <template>
