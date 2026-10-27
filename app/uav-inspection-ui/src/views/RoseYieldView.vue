@@ -199,7 +199,7 @@
             </div>
             <div class="text-left flex-1">
               <div class="text-sm font-semibold text-white">产量预算</div>
-              <div class="text-[11px] text-white/70 mt-0.5">AI 智能预估</div>
+              <div class="text-[11px] text-white/70 mt-0.5">示例预算数据</div>
             </div>
             <svg class="w-4 h-4 text-white/60 group-hover:translate-x-0.5 transition-transform shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" /></svg>
           </button>
@@ -360,7 +360,7 @@
             <div class="bg-gradient-to-r from-purple-500 to-violet-500 px-6 py-5 flex items-center justify-between shrink-0">
               <div>
                 <h2 class="text-white font-bold text-lg tracking-tight"> 玫瑰产量预算</h2>
-                <p class="text-white/70 text-xs mt-0.5">基于 AI 模型的智能预估</p>
+                <p class="text-white/70 text-xs mt-0.5">预置演示数据，不随本次视频识别更新</p>
               </div>
               <button @click="showYieldModal = false" class="w-8 h-8 rounded-full bg-white/20 hover:bg-white/30 flex items-center justify-center text-white transition-colors">
                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" /></svg>

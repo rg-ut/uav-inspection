@@ -68,7 +68,7 @@ CATEGORY_HINTS = {
     'rose-tasks': '子目录填写任务编号；在同一任务目录上传视频与 SRT 字幕。也可在玫瑰产量页面创建任务。',
     'roof-media': '子目录填写任务编号；屋顶模块展示离线结果，单独上传视频不会自动生成缺陷。',
     'roof-reports': '子目录与屋顶视频的任务编号一致；上传 defects.json、telemetry.json 和可选 report.html。',
-    'pest-data': '视频放 media 子目录，轨迹 mock_track.json 放分类根目录，报告放 reports 子目录；该模块为演示回放。',
+    'pest-data': '兼容旧回放接口的数据目录：视频放 media，轨迹 mock_track.json 放根目录，旧报告放 reports。新版玉米巡检工作台使用内置三维场景，无需配置这些回放文件。',
     'measurement-data': '结果放 task_01_xinxixueyuan_1 等任务子目录；点云 scene.json/scene.ply 放 pointcloud_web/任务编号。还需乔木实例数据及测量模型。',
     'tree-instances': '子目录填写原始任务编号，上传 summary.json、tree_instances.csv 和可选 tree_instances_overview.png。',
     'models': '测量模型使用 tree_shrub_gnb_v1、green_area_gnb_v1 子目录；巡检 .pt 权重请选择对应专用模型分类。',

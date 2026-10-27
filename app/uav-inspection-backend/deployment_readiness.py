@@ -104,9 +104,8 @@ def module_status() -> dict[str, dict]:
         entry(key, title, f'/{key}', 'measurement', missing,
               '测量基于已有点云与测量数据，不需要安装 YOLO；各文件的任务编号必须一致。')
 
-    pest_missing = [] if _has_video(backend_path('pestdata', 'media')) else [requirement('病虫害回放视频', 'pest-data', 'media')]
-    entry('pest', '病虫害巡检', '/pest', 'demo', pest_missing,
-          '航线、模型切换和 Agent 为演示；未接入真实无人机或病虫害推理服务。')
+    entry('pest', '病虫害巡检', '/pest', 'simulation', [],
+          '玉米试验田三维演示，支持区域巡查、重点复核和视点调度，无需额外视频资源。')
     entry('rose-digital', '数字玫瑰园', '/rose-digital', 'demo', [], '页面展示内置示例地块数据。')
     scene_ready = backend_path('fendaidata', 'scenes', 'fendai-flower.ksplat').is_file()
     entry('fendai', '粉黛花漫游', '/fendai-flower', 'scene', [] if scene_ready else [

@@ -63,6 +63,12 @@ Dockerfile 默认前端基路径已与 Compose 的 `/uav` 一致。根路径部�
 | 玫瑰产量 | `rose-model` / `rose-detect-best.pt` | 页面创建视频 + SRT 任务；或 `rose-tasks` 下同一任务子目录上传视频和字幕 |
 | 热力客流 | `heatmap-model` / `renliu.pt` | `heatmap-videos`，同名 MP4 / SRT 放根目录 |
 
+操作时进入首页 → 素材上传中心 → 选择对应的专用模型分类 → 子目录留空 →
+选择表中固定文件名的 `.pt` → 开始上传。大文件会自动分片，暂停后可继续；
+完成后回到模块重新检查。默认不覆盖重名文件，确认要替换时再开启覆盖。
+病虫害尚未接入实际检测器，没有可启用识别的模型上传分类；把 `.pt` 传到“其他模型”
+不会使其自动识别。页面已去除写死的病害框与置信度，改为 Three.js 仿真，无需视频。
+
 玫瑰仍支持 `ROSE_MODEL_PATH` 和旧文件名 `best.pt`。部署状态与检测器使用同一查找规则。
 覆盖已加载的模型后应重启服务，以释放检测器缓存；首次补入缺失模型后可重新检查。
 
@@ -89,9 +95,13 @@ Dockerfile 默认前端基路径已与 Compose 的 `/uav` 一致。根路径部�
 - 屋顶当前**没有实时推理接口**：页面读取离线生成的缺陷、轨迹与报告。
   `roof-media/任务编号` 放视频与可选字幕，`roof-reports/同一任务编号` 放
   `defects.json`、`telemetry.json` 和可选 `report.html`。单独上传视频不会生成检测结果。
-- 病虫害当前为演示航线、模拟模型切换与回放。`pest-data` 下 `media/` 放视频，
-  根目录放既有 `mock_track.json`，`reports/` 放既有报告。内置航线视频名为
-  `pest-inspection1.mp4`、`pest-inspection2.MP4`。这不会接入真实无人机或病害 AI。
+- 病虫害页面改为 Three.js 三维仿真：支持三条航线、开始/暂停/继续、安全返航、
+  玉米粗巡与精查、视角切换、36 个候选视点的几何遮挡与方向增益比较、巡检助手、HTML/JSON 报告与本地恢复。
+  仿真位置、航程、时间、电量和日志随运行更新，暂停后保持不变。刷新会恢复为暂停。
+  隐藏页面会自动暂停，防止后台继续飞行。真实无人机、病害检测器、病害统计均未接入。
+  原有 `pest-data` 上传分类和后端回放接口仅作为兼容保留，新页面不再使用视频、
+  静态病害框、伪造置信度、旧模拟 Agent 或旧报告生成接口。
+  仿真报告在当前浏览器保存最近 5 个任务，下载文件明确标注仿真来源。
 - 数字玫瑰园展示内置示例地块，不依赖推理安装。页面提示其演示性质。
 - 粉黛花保持独立场景加载，无需 Torch/YOLO。
 
@@ -110,11 +120,33 @@ python -m unittest discover -s tests -p test_module_readiness.py
 python -m unittest discover -s tests -p test_optional_deployment.py
 python -m unittest discover -s tests -p test_uav_assets_upload.py
 python -m unittest discover -s tests -p test_uav_assets_chunked.py
+python -m unittest discover -s tests -p test_heatmap_srt_parser.py
 cd ../uav-inspection-ui
-node --test tests/webroot.test.mjs
+node --test tests/*.test.mjs
 npm run build
 VITE_BASE=/uav/ npm run build
 ```
 
 安装依赖和真实资产后，还需播放实际视频、发起实际检测并校验结果。配置测试使用临时
 文件验证路径与协议，不替代训练模型的加载、推理质量验收或服务器镜像构建验收。
+
+## 玉米病害主动观察演示：论文借鉴与实现边界
+
+本次按三篇用户提供论文的逻辑制作交互演示，没有复制论文图片、模型、训练数据或性能结论。
+玉米模型用程序几何生成；叶片材质与线索值属于演示场景配置，不构成植物病理诊断。主界面只保留业务流程及演示任务标识，算法参考与工程说明保留在本开发文档中。
+
+| 参考论文 | 借鉴逻辑 | 本项目演示 | 未实现部分 |
+|---|---|---|---|
+| Feddock 等，*Active Robotic Perception for Disease Detection and Mapping in Apple Trees*，arXiv:2603.23112 (2026) | 观察—行动—更新；几何与语义不确定性视点选择 | 玉米样株观察记录；固定、覆盖优先、语义线索优先三种机位策略 | 真实疾病实例分割、立体深度、语义 OctoMap、机械臂执行 |
+| Chen 等，*GenNBV: Generalizable Next-Best-View Policy for Active 3D Reconstruction*，arXiv:2402.16174 (2024) | 联合几何、语义、历史观察，选择位置与相机方向，追求覆盖增益 | 3 层高度 × 12 方位共 36 个候选，相机朝向目标；保存位置、yaw/pitch、可见比例及方向历史 | 强化学习策略、训练及泛化验证、真实三态体素地图与 3D 重建 |
+| van Essen 等，*Adaptive path planning for efficient object search by UAVs in agricultural fields*，Smart Agricultural Technology 12 (2025) 101075，doi:10.1016/j.atech.2025.101075 | 高空粗巡后，仅低空复查不确定目标；合并观察、缩短复查路径 | 14 m 粗巡；按预设 0.2/0.8 阈值选择 M01/M02，在 5.5 m 各取 3 个方向；简单近邻排序；与仅高空/单株环绕航线对照 | 真正的在线检测、地理配准、检测融合、最优路径与论文实验复现 |
+
+演示流程：选择“一号试验田 · 全域巡检”并起飞，粗巡结束后状态自动进入低空精查，
+到达精查航点时由场景射线计算目标可见比例。每株有 8 个观察方向分箱；可见比例至少 50%
+才计入覆盖，同一方向重复观察不重复增加。它是观察方向覆盖，**不是病害识别率或完整表面重建率**。
+NBV 按钮移动独立观察相机，巡航无人机沿精查航线飞行，两者在 UI 中明确区分。
+视点排序是确定性启发式，未调用 GenNBV 的训练策略；语义线索来自预设场景，非网络输出。
+报告包含实际本次仿真轨迹、可见性观察、候选视点位姿，`source=simulation`、`disease_detection=null`。
+
+三篇原研究分别针对苹果树、通用物体重建、农业目标搜索。本演示仅把流程迁移到玉米示意场景，
+不能据此声称原论文提出了玉米病害模型，也不使用其指标作为本项目结果。

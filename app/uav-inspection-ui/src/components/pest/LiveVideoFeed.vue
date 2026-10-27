@@ -1,6 +1,6 @@
 ﻿<script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
-import { Maximize2, Crosshair, Map, Navigation } from 'lucide-vue-next'
+import { Maximize2, Map, Navigation } from 'lucide-vue-next'
 import { pestApi } from '../../api1/pest'
 import DetectionVideoFrame from '../common/DetectionVideoFrame.vue'
 
@@ -21,12 +21,6 @@ const videoUrl = computed(() => {
   params.set('ts', String(streamKey.value))
   return `${pestApi.videoUrl}?${params.toString()}`
 })
-
-// 模拟 YOLO 识别框数据
-const detectedObjects = ref([
-  { id: 1, label: '疑似茶尺蠖', confidence: 98, x: 30, y: 40, width: 15, height: 20, color: 'border-rose-500', text: 'text-rose-500' },
-  { id: 2, label: '叶片病斑', confidence: 85, x: 65, y: 60, width: 12, height: 15, color: 'border-amber-500', text: 'text-amber-500' }
-])
 
 const isStreamReady = ref(false)
 const streamError = ref<string | null>(null)
@@ -99,8 +93,8 @@ onMounted(() => {
 <template>
   <DetectionVideoFrame
     class="group/video h-full w-full"
-    label="YOLO 病虫害实时检测"
-    :status="streamError ? '暂无可播放视频' : props.isPaused ? '已暂停' : '实时检测中'"
+    label="病虫害巡检视频"
+    :status="streamError ? '暂无可播放视频' : props.isPaused ? '已暂停' : '回放中'"
     :playing="!props.isPaused"
     :disabled="!isStreamReady || Boolean(streamError)"
     :current-time="currentTime"
@@ -145,17 +139,8 @@ onMounted(() => {
     
     <div class="absolute inset-0 opacity-20 pointer-events-none" style="background-image: repeating-linear-gradient(0deg, transparent, transparent 2px, #1e293b 2px, #1e293b 4px); background-size: 100% 4px;"></div>
     
-    <Crosshair :size="40" class="text-emerald-500/30 absolute z-0" stroke-width="1" />
-
-    <div v-for="obj in (isStreamReady && !streamError ? detectedObjects : [])" :key="obj.id" 
-         class="absolute border-2 bg-black/10 backdrop-blur-sm transition-all duration-300"
-         :class="obj.color"
-         :style="{ left: obj.x + '%', top: obj.y + '%', width: obj.width + '%', height: obj.height + '%' }">
-      <div class="absolute -top-6 left-[-2px] bg-black/80 px-2 py-1 text-[10px] font-bold border" :class="[obj.color, obj.text]">
-        {{ obj.label }} {{ obj.confidence }}%
-      </div>
-      <div class="absolute top-0 left-0 w-2 h-2 border-t-2 border-l-2" :class="obj.color"></div>
-      <div class="absolute bottom-0 right-0 w-2 h-2 border-b-2 border-r-2" :class="obj.color"></div>
+    <div class="pointer-events-none absolute top-14 left-4 right-4 z-10 text-xs text-white/90" data-testid="pest-playback-notice">
+      尚未接入真实病虫害识别，当前仅回放视频。
     </div>
 
     <div class="absolute bottom-20 right-6 w-56 h-36 bg-[#020617]/90 backdrop-blur-md rounded-xl border border-slate-700 shadow-2xl overflow-hidden group">

@@ -164,6 +164,37 @@ function pauseAll() {
   }
 }
 
+function uploadErrorMessage(error: unknown): string {
+  if (axios.isAxiosError(error) && typeof error.response?.data?.detail === 'string') return error.response.data.detail
+  return error instanceof Error ? error.message : String(error)
+}
+
+function updateUploadSummary() {
+  const done = tasks.value.filter(t => t.status === 'done').length
+  const failed = tasks.value.filter(t => t.status === 'error').length
+  const paused = tasks.value.filter(t => t.status === 'paused').length
+  const skipped = tasks.value.filter(t => t.status === 'skipped').length
+  message.kind = failed ? 'err' : 'ok'
+  if (failed) message.text = `${done} 个成功，${failed} 个失败（可单点重试）${paused ? `，${paused} 个已暂停` : ''}`
+  else if (paused) message.text = `${done} 个成功，${paused} 个已暂停（点「继续」接着传）`
+  else message.text = `全部完成：${done} 个文件已保存${skipped ? `，${skipped} 个已跳过` : ''}`
+}
+
+async function resumeTask(t: UploadTask) {
+  if (busy.value) return
+  busy.value = true
+  stopping.value = false
+  message.text = ''
+  try {
+    await startTask(t)
+    updateUploadSummary()
+    await refreshFiles()
+  } finally {
+    busy.value = false
+    stopping.value = false
+  }
+}
+
 async function startTask(t: UploadTask) {
   t.status = 'uploading'
   t.note = ''
@@ -240,7 +271,7 @@ async function startTask(t: UploadTask) {
       t.note = '已暂停，进度已保留'
     } else {
       t.status = 'error'
-      t.note = error instanceof Error ? error.message : String(error)
+      t.note = uploadErrorMessage(error)
     }
   } finally {
     t.controller = null
@@ -284,7 +315,7 @@ async function uploadSmallBatch(batch: UploadTask[]) {
         t.note = ''
       } else {
         t.status = 'error'
-        t.note = error instanceof Error ? error.message : String(error)
+        t.note = uploadErrorMessage(error)
       }
     }
   }
@@ -319,19 +350,7 @@ async function startUpload() {
       if (stopping.value) break
       await startTask(t)
     }
-    const done = tasks.value.filter(t => t.status === 'done').length
-    const failed = tasks.value.filter(t => t.status === 'error').length
-    const paused = tasks.value.filter(t => t.status === 'paused').length
-    if (failed) {
-      message.kind = 'err'
-      message.text = `${done} 个成功，${failed} 个失败（可单点重试）${paused ? `，${paused} 个已暂停` : ''}`
-    } else if (paused) {
-      message.kind = 'ok'
-      message.text = `${done} 个成功，${paused} 个已暂停（点「继续」接着传）`
-    } else if (done) {
-      message.kind = 'ok'
-      message.text = `全部完成：${done} 个文件已保存`
-    }
+    updateUploadSummary()
     await refreshFiles()
   } finally {
     busy.value = false
@@ -481,14 +500,15 @@ onMounted(async () => {
                 v-else-if="t.status === 'paused'"
                 class="flex items-center gap-1 text-xs font-medium text-blue-600 hover:text-blue-700"
                 :disabled="busy"
-                @click="startTask(t)"
+                @click="resumeTask(t)"
               >
                 <Play :size="13" /> 继续
               </button>
               <button
                 v-else-if="t.status === 'error'"
                 class="flex items-center gap-1 text-xs font-medium text-blue-600 hover:text-blue-700"
-                @click="startTask(t)"
+                :disabled="busy"
+                @click="resumeTask(t)"
               >
                 <RotateCcw :size="13" /> 重试
               </button>
