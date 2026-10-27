@@ -882,6 +882,7 @@ function onEnded() {
 }
 
 function onVideoError() {
+  if (!currentVideoUrl.value) return
   isPlaying.value = false
   autoDetectEnabled.value = false
   setMessage('当前任务视频无法播放，请尝试重新加载任务或重新上传视频。', 'error')

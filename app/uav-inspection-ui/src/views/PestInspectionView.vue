@@ -1,197 +1,178 @@
-﻿<script setup lang="ts">
-// 这里是逻辑控制区 (TypeScript)
-import { computed, onMounted, onUnmounted, ref } from 'vue'
-import TelemetryPanel from '../components/pest/TelemetryPanel.vue'
-import FunctionalArea from '../components/pest/FunctionalArea.vue'
-import LiveVideoFeed from '../components/pest/LiveVideoFeed.vue'
-import AgentSidebar from '../components/common/AgentSidebar.vue'
-import TaskProgressBar from '../components/common/TaskProgressBar.vue'
-import SystemLogStream from '../components/common/SystemLogStream.vue'
+<script setup lang="ts">
+import { computed, onBeforeUnmount, ref } from 'vue'
+import { useRouter } from 'vue-router'
+import { ArrowLeft, Play, Pause, RotateCcw, Route, FileDown, ScanEye, Navigation, Battery, Mountain, Gauge, Camera, Send, Box, X, Clock, MoveUpRight, Maximize2, Settings2, Leaf, Activity, ChevronRight, Check, Layers } from 'lucide-vue-next'
 import InspectionHeader from '../components/common/InspectionHeader.vue'
-import FloatingNotice from '../components/common/FloatingNotice.vue'
-import { pestApi, type MissionDetail, type RouteItem, type VisionModelItem } from '../api1/pest'
+import PestSimulationScene from '../components/pest/PestSimulationScene.vue'
+import { observationTargets, observationCoverage, simulationRoutes, routeLength, simulationBattery, simulationCommand, readReports, simulationReportHtml, type Position3, type SimulationReport, type ViewStrategy } from '../utils/pestSimulation'
+import { advanceMission, createMission, isMissionRunning, missionPose, missionProgress, optimizeMission, pauseMission, restoreMission, returnMission, startMission, REQUIRED_VIEWS, type MissionServices } from '../utils/pestMission'
 
-// 页面顶部系统时钟与视频时间戳（用于遥测同步）
-const systemTime = ref(new Date().toLocaleTimeString('en-US', { hour12: false }))
-const videoTimeSec = ref(0)
-const isPaused = ref(true)
-const routeInfo = ref<RouteItem | null>(null)
-const modelInfo = ref<VisionModelItem | null>(null)
-const missionInfo = ref<MissionDetail | null>(null)
-const missionStartAt = ref<number | null>(null)
-const elapsedSec = ref(0)
-const noticeMessage = ref('请选择巡检航线与识别模型后创建任务。')
-const noticeTone = ref<'info' | 'success' | 'error'>('info')
-let missionTimer: number | undefined
-
-// 简单的定时器，每秒更新时间，体现“状态驱动”
-setInterval(() => {
-  systemTime.value = new Date().toLocaleTimeString('en-US', { hour12: false })
-}, 1000)
-
-const totalDurationSec = computed(() => (routeInfo.value?.duration_min ?? 0) * 60)
-const progress = computed(() => {
-  if (!totalDurationSec.value) return 0
-  return Math.min(1, elapsedSec.value / totalDurationSec.value)
-})
-const currentWaypoint = computed(() => {
-  const total = routeInfo.value?.waypoints ?? 0
-  if (!total) return 0
-  return Math.min(total, Math.floor(progress.value * total))
-})
-const remainingSec = computed(() => Math.max(0, totalDurationSec.value - elapsedSec.value))
-const statusText = computed(() => {
-  if (!missionInfo.value) return 'STANDBY'
-  if (progress.value >= 1) return 'COMPLETED'
-  return isPaused.value ? 'PAUSED' : 'RUNNING'
-})
-
-const startMissionTimer = () => {
-  if (missionTimer) return
-  missionTimer = window.setInterval(() => {
-    if (isPaused.value || !missionStartAt.value) return
-    elapsedSec.value = Math.floor((Date.now() - missionStartAt.value) / 1000)
-    videoTimeSec.value = elapsedSec.value
-  }, 1000)
-}
-
-const stopMissionTimer = () => {
-  if (missionTimer) {
-    window.clearInterval(missionTimer)
-    missionTimer = undefined
+const router = useRouter(), sceneRef = ref<InstanceType<typeof PestSimulationScene> | null>(null), viewport = ref<HTMLElement | null>(null)
+const ready = ref(false), sceneError = ref(''), cameraMode = ref('overview'), targetIndex = ref(0)
+const speed = ref(4), timeScale = ref(1), strategy = ref<ViewStrategy>('semantic'), mission = ref(createMission())
+const modal = ref<'' | 'routes' | 'models' | 'reports' | 'reset' | 'viewpoints'>(''), draftRoute = ref(mission.value.routeId), command = ref('')
+const notice = ref('一号试验田已就绪，区域巡查完成后将自动规划重点复核视点。')
+const messages = ref<{role: 'user' | 'assistant'; text: string}[]>([{role:'assistant',text:'我会按任务顺序完成区域巡查、视点规划和植株复核。无人机到达观察位置并悬停采样后，记录才会更新。您也可以调整复核顺序或重新规划当前视点。'}])
+const REPORT_KEY = 'uav:pest-simulation:reports:maize:v2', MISSION_KEY = 'uav:pest-simulation:mission:maize:v3'
+const reports = ref<SimulationReport[]>([])
+const routeId = computed(() => mission.value.routeId), route = computed(() => simulationRoutes.find(r => r.id === routeId.value)!)
+const stage = computed(() => mission.value.status), running = computed(() => isMissionRunning(mission.value)), points = computed(() => mission.value.leg)
+const pose = computed(() => missionPose(mission.value)), elapsed = computed(() => mission.value.elapsed), totalDistance = computed(() => mission.value.distance)
+const progress = computed(() => missionProgress(mission.value)), battery = computed(() => simulationBattery(elapsed.value)), samples = computed(() => mission.value.samples)
+const observations = computed(() => mission.value.observations), viewpoints = computed(() => mission.value.plans.filter(p => p.state === 'captured'))
+const lastView = computed(() => viewpoints.value.at(-1)), pendingView = computed(() => mission.value.pending)
+const activeTarget = computed(() => mission.value.activeTarget), historyPath = computed<Position3[]>(() => samples.value.map(s => [s.x, s.altitude, s.z]))
+const draftTarget = ref(0), draftStrategy = ref<ViewStrategy>('semantic')
+function openOptimization() { draftTarget.value=activeTarget.value ?? targetIndex.value; draftStrategy.value=strategy.value; modal.value='viewpoints' }
+function applyOptimization() { targetIndex.value=draftTarget.value; strategy.value=draftStrategy.value; optimize() }
+const statusLabels = { idle: '待命', running: '巡航中', paused: '已暂停', returning: '返航中', completed: '已完成' }
+const status = computed(() => stage.value === 'completed' && mission.value.aborted ? '已返航' : running.value && mission.value.phase === 'observe' ? '悬停采样' : running.value && mission.value.phase === 'transit' ? '飞往视点' : statusLabels[stage.value])
+const phaseIndex = computed(() => mission.value.phase === 'return' ? 2 : mission.value.surveyed ? 1 : 0)
+const observedPlants = computed(() => mission.value.plants.filter(p => p === 'reviewed').length)
+const remaining = computed(() => (routeLength(points.value) - mission.value.legDistance) / speed.value + (mission.value.phase === 'observe' ? mission.value.captureRemaining : 0))
+const strategyName = computed(() => ({fixed:'标准观察',coverage:'覆盖优先',semantic:'重点区域优先'})[pendingView.value?.strategy ?? lastView.value?.strategy ?? strategy.value])
+const logs = computed(() => mission.value.events.map(e => ({time:time(e.second),message:e.message})))
+const currentStep = computed(() => stage.value === 'completed' ? mission.value.aborted ? '中途返航 · 未完成项目保留待复核' : '巡检任务已结束 · 观察记录已归档' : !mission.value.surveyed ? '完成区域覆盖后规划观察航点' : mission.value.phase === 'return' ? mission.value.aborted ? '任务中途结束 · 安全返航' : '复核完成 · 返回起降点' : activeTarget.value !== null ? `${observationTargets[activeTarget.value]!.name} · ${Math.min(REQUIRED_VIEWS, observationCoverage(observations.value, activeTarget.value))}/${REQUIRED_VIEWS} 有效视角` : '规划下一株复核')
+const operationMessage = computed(() => (stage.value === 'paused' ? '已暂停 · ' : '') + (mission.value.phase === 'observe' ? `悬停采样 · ${mission.value.captureRemaining.toFixed(1)} s` : mission.value.phase === 'transit' ? '飞往观察视点' : '等待观察任务'))
+const canOptimize = computed(() => ready.value && mission.value.phase !== 'return' && stage.value !== 'completed' && !sceneError.value)
+const isFullscreen = ref(false)
+function fullscreenChanged() { isFullscreen.value = document.fullscreenElement === viewport.value }
+document.addEventListener('fullscreenchange', fullscreenChanged)
+function checkpoint() { try { localStorage.setItem(MISSION_KEY, JSON.stringify({mission:mission.value,speed:speed.value,timeScale:timeScale.value,strategy:strategy.value})) } catch { notice.value='当前浏览器无法保存记录，仍可执行任务并导出报告。' } }
+try {
+  reports.value = readReports(localStorage.getItem(REPORT_KEY))
+  const saved = JSON.parse(localStorage.getItem(MISSION_KEY) || 'null'), restored = restoreMission(saved?.mission)
+  if (restored) {
+    mission.value=restored; speed.value=[2,4,8].includes(saved.speed)?saved.speed:4; timeScale.value=[1,2,4].includes(saved.timeScale)?saved.timeScale:1
+    strategy.value=['fixed','coverage','semantic'].includes(saved.strategy)?saved.strategy:'semantic'
+    if (restored.activeTarget !== null) targetIndex.value=restored.activeTarget
+    notice.value=restored.status==='paused'?'已恢复任务及当前观察航段，点击“继续巡检”接着执行。':'已恢复上次任务记录。'
   }
+} catch { /* Invalid old checkpoints do not affect a new mission or saved reports. */ }
+const services: MissionServices = {
+  plan:(target,origin,mode,history,avoided)=>sceneRef.value?.planView(target,origin,mode,history,avoided) ?? null,
+  observe:(target,position)=>sceneRef.value?.observePlant(target,position) ?? 0,
 }
-
-const handleRouteActivated = (route: RouteItem) => {
-  routeInfo.value = route
+function notify(message:string) { notice.value=message; checkpoint() }
+function syncNotice() { notice.value=mission.value.events[0]?.message || notice.value; checkpoint() }
+function plantState(index:number) { if (routeId.value === 'maize-orbit' && index !== 0 && !mission.value.reviewTargets.includes(index)) return '未纳入任务'; return ({pending:'待巡查',surveyed:'已巡查',queued:'待复核',inspecting:'复核中',reviewed:'复核完成','needs-review':'待复核'})[mission.value.plants[index]!] }
+function openRoutes() { draftRoute.value=routeId.value; modal.value='routes' }
+function resetMission() { mission.value=createMission(routeId.value); modal.value=''; cameraMode.value='overview'; sceneRef.value?.resetView(); notify('任务已重置，无人机回到起降点。') }
+function start() {
+  if (!ready.value || sceneError.value) return notify('请等待三维场景加载完成。')
+  if (stage.value==='completed') resetMission()
+  startMission(mission.value); syncNotice()
 }
-
-const handleModelActivated = (model: VisionModelItem) => {
-  modelInfo.value = model
+function pause() { pauseMission(mission.value); syncNotice() }
+function returnHome() { returnMission(mission.value); syncNotice() }
+function advance(seconds:number) {
+  if (!running.value) return
+  const previousSecond=Math.floor(elapsed.value), previousEvent=mission.value.events[0]
+  advanceMission(mission.value,Math.max(0,Math.min(.1,seconds))*timeScale.value,speed.value,strategy.value,services)
+  if (previousEvent!==mission.value.events[0]) { notice.value=mission.value.events[0]?.message || notice.value; if(activeTarget.value!==null)targetIndex.value=activeTarget.value }
+  if (previousEvent!==mission.value.events[0] || previousSecond!==Math.floor(elapsed.value)) checkpoint()
+  if(activeTarget.value===null && cameraMode.value==='observation')cameraMode.value='overview'
 }
-
-const handleMissionCreated = (mission: MissionDetail, route: RouteItem | null, model: VisionModelItem | null) => {
-  missionInfo.value = mission
-  if (route) routeInfo.value = route
-  if (model) modelInfo.value = model
-  missionStartAt.value = Date.now()
-  elapsedSec.value = 0
-  isPaused.value = false
-  noticeMessage.value = `任务已启动：${mission.name || route?.name || '病虫害巡检任务'}`
-  noticeTone.value = 'success'
-  startMissionTimer()
+function optimize() {
+  if (!ready.value) return
+  const message=optimizeMission(mission.value,targetIndex.value,strategy.value,services)
+  if (modal.value==='viewpoints')modal.value=''
+  notify(message)
 }
-
-const handleTogglePause = async () => {
-  isPaused.value = !isPaused.value
-  noticeMessage.value = isPaused.value ? '巡检视频已暂停。' : '巡检视频已继续播放。'
-  noticeTone.value = 'info'
-  if (!isPaused.value) {
-    if (!missionStartAt.value) {
-      missionStartAt.value = Date.now()
-    } else {
-      missionStartAt.value = Date.now() - elapsedSec.value * 1000
-    }
-    startMissionTimer()
-  }
-
-  if (!missionInfo.value) return
-  try {
-    await pestApi.controlMission({
-      command: isPaused.value ? 'pause' : 'start',
-      params: { mission_id: missionInfo.value.id }
-    })
-  } catch (error) {
-    console.warn('Mission control failed', error)
-    noticeMessage.value = '任务控制失败，请检查后端服务。'
-    noticeTone.value = 'error'
-  }
+function configureRoute() { if(stage.value!=='idle' && stage.value!=='completed')return notify('请先重置当前任务，再更换方案。'); mission.value=createMission(draftRoute.value); modal.value=''; cameraMode.value='overview'; sceneRef.value?.resetView(); notify(`已选择 ${route.value.name}。`) }
+function saveReport() {
+  if (!samples.value.length)return notify('执行巡检后即可保存任务报告。')
+  const report:SimulationReport={id:mission.value.id,createdAt:new Date().toLocaleString('zh-CN'),routeName:route.value.name,status:stage.value,elapsed:elapsed.value,distance:totalDistance.value,samples:JSON.parse(JSON.stringify(samples.value)),observations:JSON.parse(JSON.stringify(observations.value)),viewpoints:JSON.parse(JSON.stringify(viewpoints.value)),plans:JSON.parse(JSON.stringify(mission.value.plans)),plants:[...mission.value.plants],outcome:mission.value.aborted?'interrupted':stage.value==='completed'?'completed':'in-progress',progress:progress.value}
+  reports.value=[report,...reports.value.filter(r=>r.id!==report.id)].slice(0,5)
+  try{localStorage.setItem(REPORT_KEY,JSON.stringify(reports.value));notify('巡检报告已保存。')}catch{notify('浏览器存储空间不足，仍可导出当前报告。')}
+  modal.value='reports'
 }
-
-const handleGenerateReport = async () => {
-  if (!missionInfo.value) return
-  try {
-    await pestApi.controlMission({
-      command: 'report',
-      params: { mission_id: missionInfo.value.id }
-    })
-    noticeMessage.value = '报告生成任务已提交。'
-    noticeTone.value = 'success'
-  } catch (error) {
-    console.warn('Report generation request failed', error)
-    noticeMessage.value = '报告生成请求失败，请稍后重试。'
-    noticeTone.value = 'error'
-  }
+function download(report:SimulationReport,format:'html'|'json') { const blob=new Blob([format==='html'?simulationReportHtml(report):JSON.stringify({source:'simulation',disease_detection:null,...report},null,2)],{type:format==='html'?'text/html;charset=utf-8':'application/json;charset=utf-8'}); const url=URL.createObjectURL(blob),link=document.createElement('a');link.href=url;link.download=`病虫害巡检报告_${report.id}.${format}`;link.click();window.setTimeout(()=>URL.revokeObjectURL(url),1000);notify(`${format.toUpperCase()} 报告已导出。`) }
+function sendCommand(text=command.value) {
+  const value=text.trim();if(!value)return;command.value='';messages.value.push({role:'user',text:value})
+  const action=simulationCommand(value)
+  if(action==='start')start();else if(action==='pause')pause();else if(action==='resume')stage.value==='paused'?start():notify('当前没有暂停的任务。');else if(action==='return')returnHome();else if(action==='optimize')optimize();else if(action==='status')notify(`当前${status.value}，任务完成度 ${progress.value.toFixed(1)}%，${currentStep.value}。`);else notify('可以发送：开始巡检、暂停、继续、返航、优化视点或任务状态。')
+  messages.value.push({role:'assistant',text:notice.value});messages.value=messages.value.slice(-20)
 }
-
-onMounted(() => {
-  startMissionTimer()
-})
-
-onUnmounted(() => {
-  stopMissionTimer()
-})
+async function fullscreen() { if(!viewport.value)return;try{if(document.fullscreenElement)await document.exitFullscreen();else await viewport.value.requestFullscreen()}catch{notify('浏览器未允许全屏，可在当前窗口操作。')} }
+function onSceneError(message:string){sceneError.value=message;pause();notify(message)}
+function suspend(){if(running.value)pause()}
+function time(value:number){return `${String(Math.floor(value/60)).padStart(2,'0')}:${String(Math.floor(value%60)).padStart(2,'0')}`}
+window.addEventListener('beforeunload',checkpoint)
+onBeforeUnmount(()=>{pauseMission(mission.value);checkpoint();window.removeEventListener('beforeunload',checkpoint);document.removeEventListener('fullscreenchange',fullscreenChanged)})
 </script>
 
 <template>
-  <div class="mobile-page flex min-h-screen w-full flex-col gap-4 overflow-x-hidden bg-slate-50 p-3 font-sans text-slate-700 antialiased selection:bg-rose-200 sm:p-4 lg:h-screen lg:w-screen lg:overflow-hidden">
-    <InspectionHeader title="病虫害低空智能巡检" :task-name="missionInfo?.name || routeInfo?.name || ''" :online="true">
+  <div class="pest-workbench">
+    <InspectionHeader title="病虫害低空智能巡检" :task-name="route.name">
       <template #actions>
-        <button class="border border-rose-200 bg-rose-50 text-sm font-medium text-rose-700" @click="handleTogglePause">
-          {{ isPaused ? '继续巡检' : '暂停巡检' }}
-        </button>
-        <button class="border border-slate-200 bg-white text-sm font-medium text-slate-700" :disabled="!missionInfo" @click="handleGenerateReport">
-          生成报告
-        </button>
-        <span class="px-2 font-mono text-sm text-slate-500">{{ systemTime }}</span>
+        <span class="demo-tag"><Box :size="13" />演示任务</span>
+        <button class="button secondary" @click="router.push('/')"><ArrowLeft :size="15" />首页</button>
+        <button class="button secondary" :disabled="!samples.length" @click="saveReport"><FileDown :size="15" />生成报告</button>
+        <button class="button primary" :disabled="!ready || Boolean(sceneError)" @click="running ? pause() : start()"><Pause v-if="running" :size="15" /><Play v-else :size="15" />{{ running ? '暂停巡检' : stage === 'paused' ? '继续巡检' : stage === 'completed' ? '重新巡检' : '开始巡检' }}</button>
       </template>
     </InspectionHeader>
 
-    <FloatingNotice :message="noticeMessage" :tone="noticeTone" />
+    <main class="workbench-grid">
+      <aside class="control-column">
+        <section class="card telemetry-card">
+          <div class="card-title"><h2><Activity :size="17" />飞行状态</h2><span class="state-badge" :class="{ live: running }"><i></i>{{ status }}</span></div>
+          <div class="drone-identity"><div class="drone-icon"><Navigation :size="22" /></div><div><strong>植保巡检无人机</strong><span>UAV-01 <i>·</i> 一号试验田</span></div></div>
+          <div class="battery-line"><span><Battery :size="15" />剩余电量</span><strong data-testid="sim-battery">{{ battery.toFixed(0) }}<small>%</small></strong></div><div class="battery-track"><i :style="{ width: `${battery}%` }"></i></div>
+          <div class="telemetry-grid"><div><span><Mountain :size="14" />飞行高度</span><strong data-testid="sim-altitude">{{ pose.position[1].toFixed(1) }}<small>m</small></strong></div><div><span><Gauge :size="14" />当前速度</span><strong>{{ running && mission.phase !== 'observe' ? speed.toFixed(1) : '0.0' }}<small>m/s</small></strong></div><div><span><Navigation :size="14" />航向角</span><strong>{{ ((pose.heading + 360) % 360).toFixed(0) }}<small>°</small></strong></div><div><span><Clock :size="14" />任务时长</span><strong class="time-value" data-testid="sim-elapsed">{{ time(elapsed) }}</strong></div></div>
+          <div class="coordinate-line"><span>场景坐标</span><span data-testid="sim-position">X {{ pose.position[0].toFixed(1) }} · Z {{ pose.position[2].toFixed(1) }}</span></div>
+        </section>
 
-    <main class="grid min-h-0 flex-1 grid-cols-1 gap-4 lg:grid-cols-[300px_minmax(0,1fr)_auto]">
-      
-      <aside class="order-2 flex min-h-0 flex-col gap-4 lg:order-none">
-        <div class="flex-[3] bg-white border border-slate-200 rounded-xl p-4 shadow-sm relative min-h-0">
-          <TelemetryPanel :videoTimeSec="videoTimeSec" />
-        </div>
-        <div class="flex-[2] bg-white border border-slate-200 rounded-xl p-4 shadow-sm relative min-h-0">
-          <FunctionalArea
-            @mission-created="handleMissionCreated"
-            @route-activated="handleRouteActivated"
-            @model-activated="handleModelActivated"
-          />
-        </div>
+        <section class="card task-card"><div class="card-title"><h2><Layers :size="17" />任务控制</h2><span class="section-kicker">MISSION</span></div>
+          <div class="tool-grid"><button @click="openRoutes"><Route :size="21" /><span>航线规划</span><ChevronRight :size="12" /></button><button :disabled="!canOptimize" @click="openOptimization()"><ScanEye :size="21" /><span>视点优化</span><ChevronRight :size="12" /></button><button @click="modal = 'reports'"><FileDown :size="21" /><span>巡检报告</span><ChevronRight :size="12" /></button><button @click="modal = 'models'"><Settings2 :size="21" /><span>运行配置</span><ChevronRight :size="12" /></button></div>
+          <div class="active-route"><span>当前方案</span><strong>{{ route.name }}</strong><p>{{ route.description }}</p><div><span>{{ routeId === 'maize-orbit' ? '单株复核' : '区域覆盖' }}</span><span>{{ routeId === 'maize-boundary' ? '快速巡查' : '观察航点动态规划' }}</span></div></div>
+          <label class="form-row">巡航速度<select v-model.number="speed" aria-label="巡航速度" @change="checkpoint"><option :value="2">2 m/s</option><option :value="4">4 m/s</option><option :value="8">8 m/s</option></select></label>
+          <label class="form-row">播放倍率<select v-model.number="timeScale" aria-label="播放倍率" @change="checkpoint"><option :value="1">1×</option><option :value="2">2×</option><option :value="4">4×</option></select></label>
+          <div class="paired-buttons"><button class="button secondary" :disabled="stage === 'idle' || stage === 'completed' || mission.phase === 'return'" @click="returnHome"><Navigation :size="14" />安全返航</button><button class="button secondary" @click="modal = 'reset'"><RotateCcw :size="14" />重置</button></div>
+        </section>
+        <div class="control-footer"><i></i>三维场景已{{ ready ? '就绪' : '加载中' }}<span>任务记录自动保存</span></div>
       </aside>
 
-      <section class="order-1 flex min-h-[480px] min-w-0 flex-col gap-4 sm:min-h-[680px] lg:order-none lg:min-h-0">
-        <div class="flex-[5] relative min-h-0">
-          <LiveVideoFeed :isPaused="isPaused" :routeId="routeInfo?.id" @toggle-pause="handleTogglePause" />
+      <section class="workspace-column">
+        <div ref="viewport" class="scene-viewport">
+          <PestSimulationScene ref="sceneRef" :points="points" :position="pose.position" :heading="pose.heading" :running="running" :camera-mode="cameraMode" :target-index="targetIndex" :active-target="activeTarget" :planned-view="pendingView" :history-path="historyPath" @advance="advance" @ready="ready = true" @error="onSceneError" @suspend="suspend" />
+          <div class="scene-heading"><div><span class="live-dot"></span><strong>一号玉米试验田</strong><span class="scene-subtitle">作业区域 A-01</span></div><span class="scene-mode">三维演示</span></div>
+          <div class="camera-toolbar" aria-label="视角切换"><button v-for="mode in [{ id: 'overview', label: '全景' }, { id: 'follow', label: '跟随' }, { id: 'top', label: '俯视' }, { id: 'observation', label: '机载' }]" :key="mode.id" :aria-pressed="cameraMode === mode.id" :disabled="mode.id === 'observation' && activeTarget === null" @click="cameraMode = mode.id"><Camera :size="14" />{{ mode.label }}</button><i></i><button aria-label="重置观察视角" @click="cameraMode = 'overview'; sceneRef?.resetView()"><RotateCcw :size="15" /></button><button :aria-label="isFullscreen ? '退出场景全屏' : '切换场景全屏'" :aria-pressed="isFullscreen" @click="fullscreen"><Maximize2 :size="15" /></button></div>
+          <div v-if="activeTarget !== null && cameraMode !== 'observation'" class="onboard-frame"><span><Camera :size="11" />机载视野 · {{ observationTargets[activeTarget]!.name.split(' · ')[0] }}</span><small>{{ operationMessage }}</small></div>
+          <div v-if="activeTarget !== null" class="viewpoint-hud"><ScanEye :size="15" /><div><strong>{{ observationTargets[activeTarget]!.name }}</strong><span>{{ operationMessage }} · {{ strategyName }}</span></div><button :disabled="!canOptimize" @click="targetIndex = activeTarget; optimize()">重新优化</button></div>
+          <div class="scene-footer"><span><i class="route-line"></i>当前航段<i class="trail-line"></i>已飞航迹<i class="target-dot"></i>观察视点</span><span>拖动旋转 · 滚轮缩放</span></div>
         </div>
-        <div class="relative min-h-28 shrink-0 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm sm:h-16 sm:min-h-0">
-          <TaskProgressBar
-            :isPaused="isPaused"
-            :progress="progress"
-            :routeName="routeInfo?.name ?? ''"
-            :waypoints="routeInfo?.waypoints ?? 0"
-            :currentWaypoint="currentWaypoint"
-            :remainingSec="remainingSec"
-            :statusText="statusText"
-            @toggle-pause="handleTogglePause"
-            @generate-report="handleGenerateReport"
-          />
-        </div>
-        <div class="flex-[1.5] rounded-xl shadow-sm relative min-h-0">
-          <SystemLogStream />
-        </div>
+
+        <section class="card mission-progress"><div class="progress-heading"><div><span class="state-dot" :class="{ live: running }"></span><strong>{{ status }}</strong><span class="progress-caption">{{ currentStep }}</span></div><strong data-testid="sim-progress">{{ progress.toFixed(1) }}<small>%</small></strong></div><div class="progress-track"><i :style="{ width: `${progress}%` }"></i></div><div class="progress-details"><span>本段航点 <b>{{ pose.waypoint + 1 }} / {{ points.length }}</b></span><span>航程 <b>{{ totalDistance.toFixed(1) }} m</b></span><span>本段剩余 <b>{{ time(remaining) }}</b></span><span>{{ timeScale }}×</span></div>
+          <div v-if="routeId === 'maize-adaptive'" class="workflow"><span v-for="(step, index) in ['区域巡查', '重点复核', '返航归档']" :key="step" :class="{ active: stage !== 'completed' && phaseIndex === index, done: index === 0 ? mission.surveyed : index === 1 ? mission.reviewTargets.length > 0 && mission.reviewTargets.every(i => mission.plants[i] === 'reviewed') : stage === 'completed' }"><i><Check v-if="index === 0 ? mission.surveyed : index === 1 ? mission.reviewTargets.length > 0 && mission.reviewTargets.every(i => mission.plants[i] === 'reviewed') : stage === 'completed'" :size="11" /><template v-else>{{ index + 1 }}</template></i>{{ step }}</span></div>
+        </section>
+
+        <section class="card plant-panel"><div class="card-title"><h2><Leaf :size="16" />植株观察</h2><span>已复核 <b>{{ observedPlants }}</b> 株</span><button :disabled="!canOptimize" @click="openOptimization">视点优化 <ChevronRight :size="13" /></button></div><div class="plant-grid"><button v-for="(target, index) in observationTargets" :key="target.name" class="plant-card" :aria-pressed="targetIndex === index" @click="targetIndex = index"><div><strong>{{ target.name.split(' · ')[0] }}</strong><span :class="{ observed: observationCoverage(observations, index) > 0 }">{{ plantState(index) }}</span></div><p>{{ target.name.split(' · ')[1] }}</p><div class="coverage-dots"><i v-for="sector in 8" :key="sector" :class="{ seen: observations.some(item => item.target === index && item.sector === sector - 1 && item.visible >= .5) }"></i></div><small>{{ Math.min(REQUIRED_VIEWS, observationCoverage(observations, index)) }} / {{ REQUIRED_VIEWS }} 有效视角</small></button></div></section>
+        <section class="card log-panel"><div class="card-title"><h2><Activity :size="16" />任务动态</h2><span>最近 {{ Math.min(logs.length, 20) }} 条</span></div><div class="log-scroll"><div v-for="(entry, index) in logs.slice(0, 20)" :key="index"><time>{{ entry.time }}</time><i></i><span>{{ entry.message }}</span></div><div v-if="!logs.length"><time>--:--:--</time><i></i><span>任务准备就绪，等待开始巡检。</span></div></div></section>
       </section>
 
-      <AgentSidebar class="order-3 lg:order-none" />
-
+      <aside class="card assistant-column"><div class="assistant-heading"><div class="assistant-avatar"><Box :size="23" /></div><div><h2>巡检助手</h2><span><i></i>任务调度与观察建议</span></div></div><div class="mission-overview"><span>当前任务</span><strong>{{ route.name }}</strong><div><span>{{ status }}</span><span>{{ observations.length }} 条观察记录</span></div></div><div class="chat-history" aria-live="polite"><div v-for="(message, index) in messages" :key="index" class="chat-message" :class="message.role"><span>{{ message.role === 'user' ? '我' : '巡检助手' }}</span><p>{{ message.text }}</p></div><div v-if="pendingView || lastView" class="view-summary" data-testid="optimization-result"><span><ScanEye :size="14" />{{ pendingView ? '观察视点执行中' : '观察记录已归档' }}</span><strong>{{ pendingView ? operationMessage : `${viewpoints.length} 次` }}<small>{{ pendingView ? `V${mission.sequence}` : '已完成采样' }}</small></strong><p v-if="pendingView">目标 {{ observationTargets[pendingView.target]!.name }} · 高度 {{ pendingView.position[1].toFixed(1) }} m</p><p v-else-if="lastView">最近一次视野通畅率 {{ Math.round((1 - lastView.after) * 100) }}%</p></div></div><div class="assistant-bottom"><div class="quick-commands"><button @click="sendCommand('状态')">任务状态</button><button :disabled="!canOptimize" @click="targetIndex = activeTarget ?? targetIndex; sendCommand('优化视点')">优化视点</button><button @click="sendCommand('返航')">返航</button></div><form class="command-form" @submit.prevent="sendCommand()"><input v-model="command" aria-label="巡检调度指令" placeholder="输入指令，如：开始巡检、暂停…" maxlength="120" /><button aria-label="发送指令" :disabled="!command.trim()"><Send :size="17" /></button></form><button class="report-shortcut" @click="modal = 'reports'"><FileDown :size="15" />任务报告<span>{{ reports.length }} 份</span><ChevronRight :size="13" /></button></div></aside>
     </main>
+    <div class="task-toast" role="status"><span></span>{{ notice }}</div>
+
+    <div v-if="modal" class="modal-backdrop" @click.self="modal = ''"><section class="workbench-modal" role="dialog" aria-modal="true" :aria-label="modal === 'routes' ? '航线规划' : modal === 'models' ? '运行配置' : modal === 'viewpoints' ? '视点优化' : modal === 'reset' ? '重置任务' : '巡检报告'"><div class="modal-title"><div><span>病虫害低空智能巡检</span><h2>{{ modal === 'routes' ? '航线规划' : modal === 'models' ? '运行配置' : modal === 'viewpoints' ? '视点优化' : modal === 'reset' ? '重置任务' : '巡检报告' }}</h2></div><button aria-label="关闭弹窗" @click="modal = ''"><X :size="20" /></button></div>
+      <template v-if="modal === 'routes'"><p class="modal-description">根据本次作业范围选择巡检方案。</p><button v-for="(item, index) in simulationRoutes" :key="item.id" class="route-option" :aria-pressed="draftRoute === item.id" @click="draftRoute = item.id"><span class="route-icon"><Route :size="23" /></span><div><strong>{{ item.name }}</strong><span v-if="index === 0" class="recommended">推荐</span><p>{{ item.description }}</p><small>{{ item.id === 'maize-orbit' ? '单株任务' : '区域覆盖' }} <i>·</i> {{ item.id === 'maize-boundary' ? '可选重点复核' : '复核航点自动规划' }} <i>·</i> 区域段 {{ time(routeLength(item.points) / speed) }}</small></div><span class="radio-mark"><Check v-if="draftRoute === item.id" :size="13" /></span></button><p v-if="stage !== 'idle' && stage !== 'completed'" class="inline-notice">当前任务尚未结束，请先重置任务后更换方案。</p><div class="modal-footer"><button class="button secondary" @click="modal = ''">取消</button><button class="button primary" :disabled="stage !== 'idle' && stage !== 'completed'" @click="configureRoute">应用方案</button></div></template>
+      <template v-if="modal === 'viewpoints'"><p class="modal-description">视点将加入无人机巡检航段。抵达并完成悬停采样后，更新植株观察记录。</p><label class="modal-field">观察植株<select v-model.number="draftTarget" aria-label="观察植株"><option v-for="(target, index) in observationTargets" :key="target.name" :value="index">{{ target.name }}</option></select></label><label class="modal-field">调度策略<select v-model="draftStrategy" aria-label="调度策略"><option value="fixed">标准观察</option><option value="coverage">覆盖优先</option><option value="semantic">重点区域优先</option></select></label><div class="strategy-description"><ScanEye :size="20" /><p>{{ draftStrategy === 'fixed' ? '按标准顺序安排尚未采集的观察方向。' : draftStrategy === 'coverage' ? '结合飞行距离和遮挡，优先前往尚未覆盖的观察方向。' : '结合植株重点、叶片遮挡和已采记录，逐次规划复核视点。' }}</p></div><div class="observation-metrics"><div><span>有效视角</span><strong>{{ Math.min(REQUIRED_VIEWS, observationCoverage(observations, draftTarget)) }} <small>/ {{ REQUIRED_VIEWS }}</small></strong></div><div><span>已完成采样</span><strong>{{ viewpoints.length }} <small>次</small></strong></div></div><div class="modal-footer"><button class="button secondary" @click="modal = ''">取消</button><button class="button primary" :disabled="!canOptimize" @click="applyOptimization"><ScanEye :size="15" />{{ stage === 'idle' || mission.phase === 'survey' || activeTarget !== draftTarget ? '加入优先复核' : '重新规划当前视点' }}</button></div></template>
+      <template v-if="modal === 'models'"><div class="config-summary"><div><span>任务环境</span><strong>三维场景演示</strong></div><div><span>场景资源</span><strong>一号玉米试验田</strong></div><div><span>记录保存</span><strong>当前浏览器 · 自动保存</strong></div></div><p class="modal-description">当前任务使用内置场景资源，无需上传视频。业务素材与检测模型可通过素材中心统一管理。</p><details class="model-guide"><summary>模型权重上传说明</summary><ol><li>在素材中心选择对应业务的专用模型分类。</li><li>按分类提示使用固定文件名，子目录留空后上传。</li><li>服务端需安装推理依赖；替换已加载的权重后重启服务。</li></ol><p>素材中心会自动显示当前分类要求的模型文件名。</p></details><div class="modal-footer"><button class="button secondary" @click="modal = ''">关闭</button><RouterLink class="button primary" to="/assets">打开素材中心 <MoveUpRight :size="15" /></RouterLink></div></template>
+      <template v-if="modal === 'reset'"><div class="reset-icon"><RotateCcw :size="24" /></div><p class="reset-description">确定重置当前任务？</p><p class="modal-description">当前飞行轨迹和观察记录将被清空。已保存的报告会保留；如需保留本次记录，请先生成报告。</p><div class="modal-footer"><button class="button secondary" @click="modal = ''">取消</button><button class="button primary" @click="resetMission">确认重置</button></div></template>
+      <template v-if="modal === 'reports'"><div class="report-intro"><FileDown :size="20" /><div><strong>任务档案</strong><p>已保存 {{ reports.length }} 份报告，保留最近 5 次任务。</p></div></div><div v-if="!reports.length" class="empty-state"><FileDown :size="34" /><strong>暂无巡检报告</strong><p>开始巡检后，点击“生成报告”保存本次任务记录。</p></div><article v-for="report in reports" :key="report.id" class="report-card"><span class="report-icon"><FileDown :size="21" /></span><div><strong>{{ report.routeName }}</strong><p>{{ report.createdAt }}</p><small>{{ time(report.elapsed) }} <i>·</i> {{ report.distance.toFixed(1) }} m <i>·</i> {{ report.outcome === 'interrupted' ? '中途返航' : statusLabels[report.status] || report.status }}</small></div><div class="report-actions"><button @click="download(report, 'html')">导出报告</button><button @click="download(report, 'json')">导出数据</button></div></article></template>
+    </section></div>
   </div>
 </template>
 
 <style scoped>
-/* 由于全盘使用了 Tailwind 的原子类，这里不需要写任何 CSS 代码 */
+.scene-viewport{container-type:inline-size}.onboard-frame{position:absolute;right:16px;top:65px;width:224px;height:140px;border:1px solid #ffffffaa;border-radius:4px;pointer-events:none;display:flex;flex-direction:column;justify-content:space-between;overflow:hidden;box-shadow:0 4px 12px #17382d45}.onboard-frame>span,.onboard-frame>small{display:flex;align-items:center;gap:4px;background:#173a31b8;color:white;padding:5px 7px;font-size:9px}.trail-line{height:2px;width:14px;background:#e9567c;margin-left:8px}.view-summary strong{font-size:17px!important}.viewpoint-hud{max-width:calc(100% - 30px)}
+@container(max-width:499px){.onboard-frame{width:144px;height:96px;top:110px}}
+@media(max-width:700px){.camera-toolbar button{padding:6px}.camera-toolbar{left:10px}}
+
+.pest-workbench{height:100vh;display:flex;flex-direction:column;gap:16px;padding:16px;background:#f8fafc;color:#334155;font-family:Inter,'Microsoft YaHei',sans-serif;overflow:hidden;font-size:13px}.pest-workbench *{box-sizing:border-box}button,a,select{transition:background .15s,border-color .15s,box-shadow .15s}button{cursor:pointer}button:disabled{opacity:.45;cursor:not-allowed}.button{display:inline-flex;align-items:center;justify-content:center;gap:7px;padding:9px 14px;border:1px solid transparent;border-radius:7px;font-size:12px;font-weight:600;white-space:nowrap;text-decoration:none}.button.primary{background:#e11d48;border-color:#e11d48;color:white;box-shadow:0 3px 8px #e11d4818}.button.primary:hover{background:#be123c}.button.secondary{background:white;border-color:#e2e8f0;color:#475569}.button.secondary:hover{background:#f8fafc;border-color:#cbd5e1}.demo-tag{display:flex;align-items:center;gap:5px;color:#64748b;font-size:11px;margin-right:5px}.workbench-grid{display:grid;grid-template-columns:280px minmax(0,1fr) 310px;gap:16px;min-height:0;flex:1}.card{border:1px solid #e2e8f0;border-radius:10px;background:white;box-shadow:0 3px 12px -10px #0f172a35}.control-column{min-height:0;overflow:auto;scrollbar-width:thin;display:flex;flex-direction:column;gap:14px}.control-column .card{padding:18px;flex-shrink:0}.card-title{display:flex;align-items:center;gap:10px;margin-bottom:16px}.card-title h2{display:flex;align-items:center;gap:8px;font-weight:650;font-size:13px;color:#1e293b}.card-title h2 svg{color:#64748b}.card-title>span{margin-left:auto;font-size:10px;color:#94a3b8}.section-kicker{letter-spacing:1px;font-size:9px!important}.state-badge{display:flex;align-items:center;gap:5px;padding:4px 7px;background:#f1f5f9;border-radius:4px;color:#64748b!important}.state-badge i,.state-dot{width:5px;height:5px;border-radius:50%;background:#94a3b8;display:inline-block}.state-badge.live{background:#ecfdf5;color:#059669!important}.state-badge.live i,.state-dot.live{background:#10b981;box-shadow:0 0 0 3px #10b98115}.drone-identity{display:flex;align-items:center;gap:10px;margin:20px 0}.drone-icon{width:40px;height:40px;display:grid;place-items:center;background:#f1f5f9;border:1px solid #e2e8f0;border-radius:9px;color:#64748b}.drone-identity strong{display:block;font-size:13px;font-weight:600;color:#334155}.drone-identity span{display:block;color:#94a3b8;font-size:10px;margin-top:5px}.drone-identity i{margin:0 5px;font-style:normal}.battery-line{display:flex;align-items:center;justify-content:space-between;font-size:11px;color:#64748b}.battery-line>span{display:flex;align-items:center;gap:6px}.battery-line strong{font-size:17px;color:#059669}.battery-line small{font-size:10px;margin-left:2px}.battery-track{height:4px;background:#eaf4ed;border-radius:5px;margin-top:9px}.battery-track i{display:block;height:100%;border-radius:5px;background:#10b981;transition:width .2s}.telemetry-grid{display:grid;grid-template-columns:1fr 1fr;gap:19px 10px;margin:24px 0 19px}.telemetry-grid>div>span{display:flex;align-items:center;gap:5px;color:#94a3b8;font-size:10px}.telemetry-grid strong{display:block;font-size:25px;line-height:1.2;font-weight:600;color:#1e293b;letter-spacing:-.6px;margin-top:7px;font-variant-numeric:tabular-nums}.telemetry-grid small{font-size:10px;color:#94a3b8;font-weight:400;letter-spacing:0;margin-left:4px}.telemetry-grid strong.time-value{font-size:23px}.coordinate-line{display:flex;justify-content:space-between;color:#94a3b8;border-top:1px solid #f1f5f9;padding-top:13px;font-size:10px}.coordinate-line span:last-child{font-family:monospace;color:#64748b}.tool-grid{display:grid;grid-template-columns:1fr 1fr;gap:9px}.tool-grid button{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:8px;padding:13px 10px;border:1px solid #e2e8f0;border-radius:8px;background:#fff;color:#64748b;text-align:left}.tool-grid button>svg:first-child{width:100%;color:#e85d7c}.tool-grid button span{font-size:11px;font-weight:550;color:#475569}.tool-grid button:hover{border-color:#fda4af;background:#fff8fa}.active-route{margin:20px 0 15px;padding-bottom:16px;border-bottom:1px solid #f1f5f9}.active-route>span{font-size:10px;color:#94a3b8}.active-route strong{display:block;font-size:12px;font-weight:600;margin:7px 0;color:#334155}.active-route p{font-size:11px;color:#94a3b8;line-height:1.8}.active-route div{display:flex;gap:15px;font-size:10px;color:#64748b;margin-top:9px}.form-row{display:flex;align-items:center;justify-content:space-between;font-size:11px;color:#64748b;margin-top:12px}.form-row select{padding:6px 8px;width:105px;border:1px solid #e2e8f0;border-radius:5px;background:#f8fafc;color:#475569;font-size:11px;outline:none}.paired-buttons{display:flex;gap:9px;margin-top:18px}.paired-buttons .button{flex:1;font-size:11px;padding:8px 7px}.control-footer{display:flex;align-items:center;gap:5px;font-size:9px;color:#94a3b8;padding:0 3px 5px}.control-footer>i{width:4px;height:4px;border-radius:50%;background:#10b981}.control-footer span{margin-left:auto}.workspace-column{display:flex;flex-direction:column;gap:12px;min-height:0;min-width:0}.scene-viewport{position:relative;border-radius:10px;overflow:hidden;flex:1;min-height:250px;border:1px solid #d5e0d8;background:#dbe9e5}.scene-viewport:fullscreen{height:100vh;border-radius:0}.scene-heading{position:absolute;top:0;left:0;right:0;padding:17px 18px;display:flex;justify-content:space-between;align-items:center;background:linear-gradient(#173a3199,transparent);color:white;pointer-events:none}.scene-heading>div{display:flex;gap:7px;align-items:center}.scene-heading strong{font-size:12px;font-weight:600}.live-dot{width:5px;height:5px;border-radius:50%;background:#82e2ae;box-shadow:0 0 0 3px #a5ffd418}.scene-subtitle{font-size:9px;opacity:.7;border-left:1px solid #ffffff45;padding-left:8px;margin-left:3px}.scene-mode{font-size:9px;padding:3px 6px;border:1px solid #ffffff40;border-radius:4px;background:#173c3120}.camera-toolbar{position:absolute;top:57px;left:18px;display:flex;align-items:center;gap:2px;background:#fffffff2;box-shadow:0 4px 16px #12372a18;border:1px solid #ffffff80;border-radius:7px;padding:4px}.camera-toolbar button{display:flex;align-items:center;gap:5px;font-size:10px;color:#64748b;border-radius:4px;padding:6px 8px}.camera-toolbar button[aria-pressed=true]{color:#e11d48;background:#fff1f2}.camera-toolbar>i{height:16px;width:1px;background:#e2e8f0;margin:0 3px}.scene-footer{position:absolute;bottom:0;left:0;right:0;display:flex;justify-content:space-between;gap:10px;padding:14px 17px;background:linear-gradient(transparent,#16352e66);color:#fff;font-size:9px;pointer-events:none}.scene-footer>span{display:flex;gap:6px;align-items:center}.route-line{width:14px;height:2px;background:#48e1ba}.target-dot{width:6px;height:6px;border-radius:50%;background:#ffd270;margin-left:12px}.viewpoint-hud{position:absolute;left:18px;bottom:45px;background:#fffffff2;border:1px solid #e2e8f0;box-shadow:0 4px 16px #18352b20;border-radius:8px;display:flex;align-items:center;gap:10px;padding:12px;color:#059669}.viewpoint-hud strong{display:block;font-size:11px;color:#334155}.viewpoint-hud span{display:block;font-size:10px;color:#94a3b8;margin-top:4px}.viewpoint-hud button{font-size:10px;margin-left:12px;color:#64748b;border-left:1px solid #e2e8f0;padding-left:12px}.mission-progress{padding:14px 17px;flex-shrink:0}.progress-heading,.progress-heading>div{display:flex;align-items:center;gap:8px}.progress-heading{justify-content:space-between;font-size:12px}.progress-heading strong{font-weight:600;color:#334155}.progress-heading>strong{font-size:17px;color:#e11d48;font-variant-numeric:tabular-nums}.progress-heading small{font-size:10px;margin-left:2px}.progress-caption{font-size:10px;color:#94a3b8;margin-left:4px}.progress-track{height:4px;background:#f1f5f9;border-radius:4px;margin:11px 0 10px;overflow:hidden}.progress-track i{display:block;height:100%;background:#f06283;border-radius:4px;transition:width .1s linear}.progress-details{display:flex;justify-content:space-between;font-size:10px;color:#94a3b8}.progress-details b{color:#64748b;font-weight:500;margin-left:5px}.workflow{display:flex;align-items:center;justify-content:space-between;gap:14px;border-top:1px solid #f1f5f9;margin-top:12px;padding-top:11px;font-size:10px;color:#94a3b8}.workflow>span{display:flex;align-items:center;gap:6px;flex:1}.workflow>span:after{content:'';height:1px;background:#e2e8f0;flex:1;margin-left:5px}.workflow>span:last-child{flex:none}.workflow>span:last-child:after{display:none}.workflow i{display:grid;place-items:center;border:1px solid #e2e8f0;border-radius:50%;width:16px;height:16px;font-style:normal;font-size:9px}.workflow .active{color:#e11d48}.workflow .active i{background:#fff1f2;border-color:#fecdd3}.workflow .done{color:#10b981}.workflow .done i{background:#ecfdf5;border-color:#a7f3d0}.plant-panel{padding:14px 17px;flex-shrink:0}.plant-panel .card-title{margin-bottom:12px}.plant-panel .card-title>span{margin-left:0;font-size:10px}.plant-panel .card-title>span b{font-weight:600;color:#475569}.plant-panel .card-title>button{margin-left:auto;display:flex;align-items:center;color:#94a3b8;font-size:10px;gap:2px}.plant-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:9px}.plant-card{min-width:0;padding:11px;text-align:left;border:1px solid #e2e8f0;border-radius:7px;background:#fff}.plant-card[aria-pressed=true]{border-color:#fda4af;box-shadow:0 0 0 1px #fff1f2;background:#fffafb}.plant-card>div:first-child{display:flex;justify-content:space-between;gap:4px;align-items:center}.plant-card strong{font-size:12px;font-weight:650;color:#334155}.plant-card>div>span{font-size:9px;color:#94a3b8}.plant-card>div>span.observed{color:#059669}.plant-card p{font-size:10px;color:#94a3b8;margin-top:4px}.coverage-dots{display:flex;gap:3px;margin:11px 0 5px}.coverage-dots i{height:4px;flex:1;border-radius:2px;background:#e2e8f0}.coverage-dots i.seen{background:#34b58b}.plant-card small{font-size:9px;color:#94a3b8}.log-panel{padding:13px 17px;flex-shrink:0;height:112px}.log-panel .card-title{margin-bottom:10px}.log-scroll{height:57px;overflow:auto;scrollbar-width:thin}.log-scroll>div{display:flex;align-items:baseline;gap:9px;font-size:10px;line-height:1.9;color:#64748b}.log-scroll time{color:#94a3b8;font-family:monospace;flex-shrink:0}.log-scroll i{width:4px;height:4px;border-radius:50%;background:#eaa6b5;flex-shrink:0;align-self:center}.assistant-column{min-height:0;display:flex;flex-direction:column;overflow:hidden}.assistant-heading{display:flex;gap:11px;align-items:center;padding:21px 19px;border-bottom:1px solid #f1f5f9}.assistant-avatar{display:grid;place-items:center;width:42px;height:42px;border-radius:12px;background:linear-gradient(140deg,#fff1f2,#ffe4ec);border:1px solid #ffe4e6;color:#e85a7b}.assistant-heading h2{font-size:14px;font-weight:650;color:#1e293b}.assistant-heading span{display:flex;align-items:center;gap:5px;font-size:10px;color:#94a3b8;margin-top:6px}.assistant-heading span i{height:4px;width:4px;border-radius:50%;background:#10b981}.mission-overview{margin:16px 17px;padding:13px;border:1px solid #e2e8f0;border-radius:8px;background:#fbfcfe}.mission-overview>span{font-size:9px;color:#94a3b8}.mission-overview strong{display:block;color:#475569;font-weight:550;font-size:11px;margin-top:5px}.mission-overview>div{display:flex;justify-content:space-between;font-size:9px;margin-top:11px;color:#94a3b8}.mission-overview>div>span:first-child{color:#10b981}.chat-history{min-height:0;flex:1;overflow:auto;padding:0 17px;scrollbar-width:thin}.chat-message{margin-bottom:17px;font-size:12px;line-height:1.9}.chat-message>span{display:block;font-size:9px;color:#94a3b8;margin-bottom:6px}.chat-message p{padding:13px;border:1px solid #eef2f6;border-radius:0 8px 8px;background:#f8fafc;color:#64748b;overflow-wrap:anywhere;white-space:pre-wrap}.chat-message.user p{background:#fff1f4;color:#b94b69;border-color:#ffe4eb}.chat-message.user>span{text-align:right}.view-summary{padding:14px;border:1px solid #d1fae5;border-radius:8px;background:#f6fdf9;margin-bottom:16px}.view-summary>span{display:flex;align-items:center;gap:6px;color:#059669;font-size:10px}.view-summary strong{font-size:25px;display:block;color:#059669;font-weight:600;margin:9px 0 5px}.view-summary small{font-size:10px;font-weight:400;margin-left:5px;color:#78a895}.view-summary p{font-size:9px;color:#94a3b8}.assistant-bottom{padding:13px 17px 17px;border-top:1px solid #f1f5f9}.quick-commands{display:flex;gap:6px;margin-bottom:11px}.quick-commands button{border:1px solid #e2e8f0;color:#64748b;background:#fff;padding:5px 8px;border-radius:5px;font-size:10px}.quick-commands button:hover{border-color:#fda4af;color:#e11d48}.command-form{display:flex;align-items:center;background:#f8fafc;border:1px solid #e2e8f0;border-radius:7px;overflow:hidden}.command-form input{min-width:0;flex:1;background:transparent;padding:13px 10px;font-size:11px;outline:none}.command-form input::placeholder{color:#94a3b8}.command-form button{color:#e85a7b;padding:9px}.report-shortcut{display:flex;align-items:center;gap:7px;width:100%;margin-top:16px;color:#64748b;font-size:11px}.report-shortcut>span{margin-left:auto;font-size:10px;color:#94a3b8}.task-toast{position:fixed;bottom:8px;left:50%;transform:translateX(-50%);max-width:calc(100% - 32px);display:flex;align-items:center;gap:7px;padding:7px 13px;background:#ffffffed;border:1px solid #e2e8f0;box-shadow:0 3px 14px #0f172a08;border-radius:7px;color:#64748b;font-size:10px;z-index:20;pointer-events:none;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.task-toast>span{width:4px;height:4px;border-radius:50%;background:#94a3b8;flex-shrink:0}.modal-backdrop{position:fixed;z-index:100;inset:0;display:flex;align-items:center;justify-content:center;padding:24px;background:#0f172a45;backdrop-filter:blur(3px)}.workbench-modal{width:min(600px,100%);max-height:90vh;overflow:auto;border:1px solid #e2e8f0;background:#fff;border-radius:13px;padding:25px;box-shadow:0 24px 80px #0f172a30}.modal-title{display:flex;justify-content:space-between;align-items:center;margin-bottom:20px}.modal-title>div>span{font-size:10px;color:#94a3b8}.modal-title h2{font-size:20px;color:#1e293b;font-weight:650;margin-top:5px}.modal-title>button{padding:5px;color:#94a3b8;border-radius:5px}.modal-title>button:hover{background:#f8fafc}.modal-description{font-size:12px;color:#94a3b8;line-height:1.9;margin:12px 0 20px}.route-option{display:flex;align-items:center;gap:14px;text-align:left;width:100%;border:1px solid #e2e8f0;border-radius:9px;padding:17px;margin-top:12px}.route-option[aria-pressed=true]{background:#fff8fa;border-color:#f9a4b4}.route-icon{display:grid;place-items:center;height:44px;width:44px;flex-shrink:0;border:1px solid #f1f5f9;background:#f8fafc;border-radius:9px;color:#94a3b8}.route-option[aria-pressed=true] .route-icon{border-color:#ffe4e6;background:#fff1f2;color:#e85d7b}.route-option>div{flex:1;min-width:0}.route-option strong{font-size:13px;font-weight:600;color:#334155}.route-option p{font-size:11px;color:#94a3b8;line-height:1.8;margin:7px 0}.route-option small{color:#94a3b8;font-size:10px}.route-option small i,.report-card small i{font-style:normal;margin:0 6px}.recommended{font-size:9px;color:#e85a7b;background:#fff1f2;border:1px solid #ffe4e6;padding:2px 5px;border-radius:4px;margin-left:7px}.radio-mark{border:1px solid #cbd5e1;border-radius:50%;width:18px;height:18px;display:grid;place-items:center;flex-shrink:0;color:white}.route-option[aria-pressed=true] .radio-mark{background:#e85d7b;border-color:#e85d7b}.modal-footer{display:flex;justify-content:flex-end;gap:9px;border-top:1px solid #f1f5f9;padding-top:20px;margin-top:24px}.inline-notice{background:#fffbeb;color:#b48530;font-size:11px;border-radius:6px;padding:11px;margin-top:14px}.modal-field{display:block;font-size:12px;color:#64748b;margin-top:19px}.modal-field select{display:block;width:100%;padding:11px 12px;border:1px solid #e2e8f0;border-radius:6px;background:#fff;color:#475569;font-size:12px;margin-top:9px;outline:none}.strategy-description{display:flex;align-items:center;gap:12px;background:#f8fafc;border:1px solid #eef2f6;border-radius:8px;padding:14px;color:#94a3b8;margin-top:18px}.strategy-description>svg{flex-shrink:0;color:#e85a7b}.strategy-description p{font-size:11px;line-height:1.9}.observation-metrics{display:grid;grid-template-columns:1fr 1fr;border:1px solid #e2e8f0;border-radius:8px;margin-top:18px;padding:16px}.observation-metrics>div{display:flex;flex-direction:column;gap:9px}.observation-metrics>div+div{padding-left:20px;border-left:1px solid #e2e8f0}.observation-metrics span{font-size:10px;color:#94a3b8}.observation-metrics strong{font-size:23px;font-weight:600;color:#334155}.observation-metrics small{font-size:11px;color:#94a3b8;font-weight:400}.config-summary{border:1px solid #e2e8f0;border-radius:8px;padding:2px 16px}.config-summary>div{display:flex;justify-content:space-between;gap:12px;padding:15px 0;font-size:12px;border-bottom:1px solid #f1f5f9}.config-summary>div:last-child{border-bottom:0}.config-summary span{color:#94a3b8}.config-summary strong{color:#475569;font-weight:500}.model-guide{font-size:11px;color:#94a3b8;line-height:1.9;border:1px solid #e2e8f0;border-radius:7px;padding:13px}.model-guide summary{cursor:pointer;color:#64748b}.model-guide ol{list-style:decimal;padding-left:18px;margin:12px 0}.reset-icon{height:52px;width:52px;border-radius:12px;display:grid;place-items:center;background:#fff1f2;color:#e85a7b;margin:24px auto 14px}.reset-description{text-align:center;font-size:15px;color:#334155;font-weight:600}.report-intro{display:flex;align-items:center;gap:12px;background:#f8fafc;border:1px solid #eef2f6;border-radius:8px;padding:15px;color:#94a3b8;margin:10px 0 20px}.report-intro strong{color:#64748b;font-size:12px;font-weight:600}.report-intro p{font-size:11px;margin-top:5px}.report-card{display:flex;align-items:center;gap:12px;padding:17px 0;border-bottom:1px solid #f1f5f9}.report-icon{height:42px;width:38px;display:grid;place-items:center;border:1px solid #ffe4e6;border-radius:7px;color:#e85a7b;background:#fff8fa;flex-shrink:0}.report-card>div:first-of-type{flex:1}.report-card strong{font-size:12px;color:#475569;font-weight:600}.report-card p{font-size:10px;color:#94a3b8;margin:5px 0}.report-card small{font-size:10px;color:#94a3b8}.report-actions{display:flex;flex-direction:column;gap:8px}.report-actions button{font-size:10px;color:#e85a7b}.report-actions button+button{color:#94a3b8}.empty-state{display:flex;flex-direction:column;align-items:center;gap:14px;padding:40px 0;color:#cbd5e1}.empty-state strong{font-size:13px;color:#64748b;font-weight:500}.empty-state p{font-size:11px;color:#94a3b8}
+@media(min-height:950px){.telemetry-grid{gap:24px 10px}.log-panel{height:140px}.log-scroll{height:84px}.plant-card{padding:13px}.plant-panel{padding:16px 18px}}
+@media(max-width:1350px){.workbench-grid{grid-template-columns:250px minmax(0,1fr) 280px;gap:12px}.pest-workbench{gap:12px;padding:12px}.control-column .card{padding:15px}.plant-card{padding:9px}.plant-card>div:first-child{align-items:flex-start;flex-direction:column;gap:3px}.scene-subtitle{display:none}.assistant-heading{padding:18px 16px}.progress-caption{display:none}}
+@media(max-width:1150px){.pest-workbench{height:auto;min-height:100vh;overflow:visible}.workbench-grid{grid-template-columns:250px minmax(0,1fr);flex:none;align-items:start}.control-column{overflow:visible}.workspace-column{min-height:900px}.scene-viewport{flex:none;height:440px}.assistant-column{grid-column:1/-1;min-height:420px;max-height:550px}.chat-history{max-height:230px}.mission-overview{margin-bottom:10px}.task-toast{position:static;transform:none;max-width:none;white-space:normal}.log-panel{height:140px}.log-scroll{height:85px}}
+@media(max-width:700px){.pest-workbench{padding:10px;gap:12px}.demo-tag{font-size:10px}.button{padding:8px 10px;font-size:11px}.workbench-grid{display:flex;flex-direction:column;gap:12px}.workspace-column{width:100%;order:-1;min-height:0}.control-column{width:100%}.scene-viewport{height:370px}.plant-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.plant-card>div:first-child{flex-direction:row}.plant-panel,.mission-progress{padding:14px}.card-title>span{font-size:9px}.plant-panel .card-title>span{display:none}.progress-details{font-size:9px}.progress-details b{margin-left:2px}.workflow{gap:6px}.workflow>span:after{margin-left:1px}.assistant-column{width:100%;min-height:500px}.telemetry-grid{grid-template-columns:repeat(4,minmax(0,1fr));gap:7px}.telemetry-grid strong{font-size:22px}.telemetry-grid strong.time-value{font-size:20px}.tool-grid{grid-template-columns:repeat(4,minmax(0,1fr))}.tool-grid button{padding:11px 8px;gap:7px}.tool-grid button>svg:last-child{display:none}.active-route>div{margin-top:7px}.modal-backdrop{padding:12px}.workbench-modal{padding:20px;max-height:92vh}.route-option{padding:13px;gap:10px}.route-icon{width:32px;height:38px}.route-option strong{font-size:12px}.recommended{display:none}.viewpoint-hud{left:10px;bottom:40px;padding:9px}.viewpoint-hud button{margin-left:5px;padding-left:8px}.scene-footer{font-size:8px;padding:12px}.scene-heading{padding:14px}.camera-toolbar{left:12px}.scene-mode{font-size:8px}.control-footer{font-size:9px}}
 </style>

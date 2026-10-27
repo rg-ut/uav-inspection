@@ -21,6 +21,13 @@ test('external and relative resources are preserved', () => {
   }
 })
 
+test('server-prefixed media URLs are not prefixed twice', () => {
+  for (const path of ['/uav/api/v1/rose/tasks/demo/video.mp4', '/uav/', '/uav', '/uav?tab=1', '/uav#top']) {
+    assert.equal(webPath(path, '/uav/'), path)
+  }
+  assert.equal(webPath('/uav-other/video.mp4', '/uav/'), '/uav/uav-other/video.mp4')
+})
+
 test('root WebSocket path uses the current host and secure scheme', () => {
   globalThis.location = { protocol: 'https:', host: 'inspection.example' }
   assert.equal(wsPath('/ws/events'), 'wss://inspection.example/ws/events')

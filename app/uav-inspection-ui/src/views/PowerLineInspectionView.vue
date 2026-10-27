@@ -273,6 +273,7 @@ function onEnded() {
 }
 
 function onVideoError() {
+  if (!currentVideoUrl.value) return
   isPlaying.value = false
   message.value = '视频无法播放，请重新选择任务。'
 }
@@ -530,7 +531,7 @@ onUnmounted(() => {
             </div>
             <div class="flex items-center justify-between rounded-xl border border-slate-200 bg-slate-50/90 px-3 py-1.5">
               <span>模型文件</span>
-              <span class="max-w-[160px] truncate font-medium text-slate-900">{{ powerInfo?.model.name || '加载中' }}</span>
+              <span class="max-w-[160px] truncate font-medium text-slate-900">{{ powerInfo?.model.name || '模型未就绪' }}</span>
             </div>
             <div class="rounded-xl border border-slate-200 bg-slate-50/90 px-3 py-1.5">
               <div class="mb-2 text-xs text-slate-500">识别类别</div>
@@ -755,13 +756,13 @@ onUnmounted(() => {
               <span>置信度</span>
               <span>{{ confThreshold.toFixed(2) }}</span>
             </div>
-            <input v-model="confThreshold" type="range" min="0.1" max="0.9" step="0.01" class="w-full accent-amber-400" />
+            <input v-model.number="confThreshold" type="range" min="0.1" max="0.9" step="0.01" class="w-full accent-amber-400" />
 
             <div class="mb-3 mt-5 flex items-center justify-between text-sm text-slate-600">
               <span>IOU</span>
               <span>{{ iouThreshold.toFixed(2) }}</span>
             </div>
-            <input v-model="iouThreshold" type="range" min="0.1" max="0.9" step="0.01" class="w-full accent-amber-400" />
+            <input v-model.number="iouThreshold" type="range" min="0.1" max="0.9" step="0.01" class="w-full accent-amber-400" />
           </div>
 
           <div class="rounded-2xl border border-slate-200 bg-slate-50 p-4">
@@ -780,7 +781,7 @@ onUnmounted(() => {
               <span>检测间隔</span>
               <span>{{ detectIntervalSec.toFixed(1) }} s</span>
             </div>
-            <input v-model="detectIntervalSec" type="range" min="0.5" max="3" step="0.1" class="w-full accent-amber-400" />
+            <input v-model.number="detectIntervalSec" type="range" min="0.5" max="3" step="0.1" class="w-full accent-amber-400" />
           </div>
         </div>
       </div>

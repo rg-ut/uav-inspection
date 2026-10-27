@@ -260,6 +260,7 @@ function onVideoEnded() {
 }
 
 function onVideoError() {
+  if (!activeVideoUrl.value) return
   isPlaying.value = false
   message.value = '视频无法播放，请重新选择任务。'
 }
@@ -533,8 +534,8 @@ onUnmounted(() => {
 
           <DetectionVideoFrame
             class="h-[62vh] min-h-[360px] max-h-[680px] sm:min-h-[500px] xl:h-[calc(100vh-190px)] xl:min-h-[600px] xl:max-h-[900px]"
-            label="YOLO 屋顶缺陷检测"
-            :status="isPlaying ? '实时检测中' : '等待启动'"
+            label="屋顶离线巡检回放"
+            :status="isPlaying ? '回放中' : '等待播放'"
             :playing="isPlaying"
             :disabled="!canPlay"
             :current-time="currentVideoTimeMs / 1000"
@@ -742,7 +743,7 @@ onUnmounted(() => {
               <span>播放速度</span>
               <span>{{ playbackRate.toFixed(1) }} x</span>
             </div>
-            <input v-model="playbackRate" type="range" min="0.5" max="2" step="0.1" class="w-full accent-cyan-500" />
+            <input v-model.number="playbackRate" type="range" min="0.5" max="2" step="0.1" class="w-full accent-cyan-500" />
           </div>
 
           <div class="rounded-2xl border border-slate-200 bg-slate-50 p-4">

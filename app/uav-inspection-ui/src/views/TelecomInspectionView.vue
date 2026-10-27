@@ -551,6 +551,7 @@ function onEnded() {
 }
 
 function onVideoError() {
+  if (!currentVideoUrl.value) return
   isPlaying.value = false
   setMessage('视频无法播放，请重新选择任务。', 'error')
 }

@@ -1,11 +1,12 @@
 import os
-import importlib.util
 from pathlib import Path
 from fastapi import FastAPI, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, StreamingResponse
 from deployment_paths import DATA_ROOT, PROJECT_ROOT, backend_path, project_path
+from deployment_readiness import MODEL_PATHS, module_status
+from optional_inference import inference_dependencies_available
 
 from heatmapapp.api.v1 import tasks, websocket, predict
 from heatmapapp.services.ai_inference import engine
@@ -20,6 +21,7 @@ from treeapp.api import detect as pruning_detect
 from vegetationapp import api as vegetation_api
 from assetsapp import api as assets_api
 from fendaiapp import api as fendai_api
+from authapp import api as auth_api
 
 app = FastAPI(title='园区无人机巡检系统')
 
@@ -48,6 +50,7 @@ FRONTEND_DIST = Path(os.getenv('UAV_FRONTEND_DIST', str(PROJECT_ROOT / 'uav-insp
 for path in [VIDEO_PATH, SNAPSHOT_PATH, PEST_MEDIA_PATH, ROSE_TASKS_PATH, TELECOM_MEDIA_PATH, TELECOM_TASKS_PATH, ROOF_MEDIA_PATH, ROOF_REPORTS_PATH, POWER_MEDIA_PATH, WALL_MEDIA_PATH, PRUNING_MEDIA_PATH, ROSE_PICTURES_PATH]:
     os.makedirs(path, exist_ok=True)
 
+app.include_router(auth_api.router, prefix='/api/v1/auth', tags=['账号'])
 app.include_router(tasks.router, prefix='/api/v1/tasks', tags=['任务'])
 app.include_router(websocket.router, prefix='/api/v1/ws', tags=['实时推理'])
 app.include_router(predict.router, prefix='/api/v1/predict', tags=['客流预测'])
@@ -94,16 +97,9 @@ async def health():
 
 @app.get('/api/deployment/status')
 async def deployment_status():
-    weight_files = {
-        'heatmap': backend_path('heatmapweight', 'renliu.pt'),
-        'rose': Path(os.getenv('ROSE_MODEL_PATH', str(backend_path('roseapp', 'rose-detect-best.pt')))),
-        'telecom': backend_path('telecomapp', 'station2-best.pt'),
-        'power': backend_path('powerapp', 'wire-pole-seg.pt'),
-        'wall': backend_path('wallapp', 'wall-damage-best.pt'),
-        'pruning': backend_path('treeapp', 'tree-pruning-best.pt'),
-    }
+    weight_files = {name: resolve() for name, resolve in MODEL_PATHS.items()}
     models = {name: path.is_file() for name, path in weight_files.items()}
-    dependencies = all(importlib.util.find_spec(name) is not None for name in ('torch', 'ultralytics'))
+    dependencies = inference_dependencies_available()
     media_roots = [VIDEO_PATH, PEST_MEDIA_PATH, ROSE_TASKS_PATH, TELECOM_MEDIA_PATH,
                    TELECOM_TASKS_PATH, ROOF_MEDIA_PATH, POWER_MEDIA_PATH, WALL_MEDIA_PATH, PRUNING_MEDIA_PATH]
     media_suffixes = {'.mp4', '.avi', '.mov', '.mkv', '.webm'}
@@ -117,6 +113,7 @@ async def deployment_status():
         'inference_dependencies_installed': dependencies,
         'models': models,
         'missing_models': [name for name, exists in models.items() if not exists],
+        'modules': module_status(),
         'data_root': str(DATA_ROOT),
         'message': '未安装的数据和模型为可选项；基础服务可正常运行。',
     }}
@@ -158,4 +155,3 @@ async def frontend(path: str):
     if path.strip('/') in spa_routes and (FRONTEND_DIST / 'index.html').is_file():
         return FileResponse(FRONTEND_DIST / 'index.html')
     raise HTTPException(status_code=404, detail='页面或文件不存在；首次部署请先运行 setup。')
-

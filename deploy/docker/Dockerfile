@@ -8,7 +8,7 @@ WORKDIR /src
 COPY app/uav-inspection-ui/package.json app/uav-inspection-ui/package-lock.json ./
 RUN npm config set registry https://registry.npmmirror.com && npm ci --no-audit --no-fund
 COPY app/uav-inspection-ui/ ./
-ARG VITE_BASE=/
+ARG VITE_BASE=/uav/
 ENV VITE_BASE=${VITE_BASE}
 RUN npm run build
 
@@ -17,6 +17,7 @@ ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 PYTHONUTF8=1 \
     PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
 WORKDIR /app
 COPY app/uav-inspection-backend/requirements.txt app/uav-inspection-backend/requirements-base.txt \
+     app/uav-inspection-backend/requirements-inference.txt \
      app/uav-inspection-backend/requirements-base-lock.txt /tmp/
 # OpenCV 运行库与 pip 依赖同层（slim 缺 libxcb/libGL 会静默降级视觉功能）
 # 注：校园网出口对 HTTPS 做中间人拦截、对 HTTP InRelease 篡改签名，apt 校验必挂，
@@ -25,6 +26,14 @@ RUN pip install --no-cache-dir -r /tmp/requirements.txt \
     && apt-get update -qq -o Acquire::AllowInsecureRepositories=true \
     && apt-get install -y -qq --no-install-recommends --allow-unauthenticated libxcb1 libgl1 libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
+# Opt in to real CPU inference; trained business weights still come from /data.
+ARG UAV_INSTALL_INFERENCE=0
+RUN case "$UAV_INSTALL_INFERENCE" in \
+      1) pip install --no-cache-dir torch==2.9.1 torchvision==0.24.1 --index-url https://download.pytorch.org/whl/cpu \
+         && pip install --no-cache-dir -r /tmp/requirements-inference.txt ;; \
+      0) ;; \
+      *) echo 'UAV_INSTALL_INFERENCE must be 0 or 1' >&2; exit 1 ;; \
+    esac
 COPY app/uav-inspection-backend/ /app/uav-inspection-backend/
 COPY --from=fe-build /src/dist /app/uav-inspection-ui/dist
 # UAV_DATA_DIR 指向命名卷挂载点；UAV_URL_PREFIX 与 VITE_BASE 保持一致

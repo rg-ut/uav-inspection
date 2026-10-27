@@ -14,3 +14,6 @@ app/uav-inspection-ui/dist/
 app/delivery/
 *.log
 .DS_Store
+
+# Local account/session database
+app/uav-inspection-backend/auth/

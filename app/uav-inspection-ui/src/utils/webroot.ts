@@ -14,6 +14,8 @@ export function webPath(absolutePath: string, baseUrl = BASE_URL): string {
   if (/^(https?:|data:|blob:|\/\/)/i.test(absolutePath)) return absolutePath
   if (!absolutePath.startsWith('/')) return absolutePath
   const prefix = stripSlashes(baseUrl)
+  // API responses may already include UAV_URL_PREFIX. Do not add it again.
+  if (prefix && (absolutePath === `/${prefix}` || absolutePath.startsWith(`/${prefix}/`) || absolutePath.startsWith(`/${prefix}?`) || absolutePath.startsWith(`/${prefix}#`))) return absolutePath
   return `${prefix ? `/${prefix}` : ''}${absolutePath}`
 }
 

@@ -41,6 +41,37 @@ CATEGORIES: dict[str, Path] = {
     'measurement-data': DATA_ROOT / 'measurement_data',
     'models': DATA_ROOT / 'models',
     'fendai-scenes': backend_path('fendaidata', 'scenes'),
+    'telecom-model': backend_path('telecomapp'),
+    'power-model': backend_path('powerapp'),
+    'wall-model': backend_path('wallapp'),
+    'pruning-model': backend_path('treeapp'),
+    'rose-model': backend_path('roseapp'),
+    'telecom-tasks': backend_path('telecom-tasks'),
+    'rose-tasks': backend_path('rose-tasks'),
+    'roof-reports': backend_path('roofdata', 'reports'),
+    'pest-data': backend_path('pestdata'),
+    'tree-instances': DATA_ROOT / 'prelabel_output' / 'instances_20260715',
+}
+
+MODEL_FILENAMES = {
+    'telecom-model': 'station2-best.pt',
+    'power-model': 'wire-pole-seg.pt',
+    'wall-model': 'wall-damage-best.pt',
+    'pruning-model': 'tree-pruning-best.pt',
+    'rose-model': 'rose-detect-best.pt',
+}
+
+CATEGORY_HINTS = {
+    **{key: f'文件名必须为 {name}，子目录留空。上传可信的训练权重后重新检查模块。' for key, name in MODEL_FILENAMES.items()},
+    'heatmap-model': '上传 renliu.pt，子目录留空；还需在服务器安装 AI 推理依赖。',
+    'telecom-tasks': '子目录填写任务编号；在同一任务目录上传视频与 SRT 字幕。也可在通信基站页面创建任务。',
+    'rose-tasks': '子目录填写任务编号；在同一任务目录上传视频与 SRT 字幕。也可在玫瑰产量页面创建任务。',
+    'roof-media': '子目录填写任务编号；屋顶模块展示离线结果，单独上传视频不会自动生成缺陷。',
+    'roof-reports': '子目录与屋顶视频的任务编号一致；上传 defects.json、telemetry.json 和可选 report.html。',
+    'pest-data': '兼容旧回放接口的数据目录：视频放 media，轨迹 mock_track.json 放根目录，旧报告放 reports。新版玉米巡检工作台使用内置三维场景，无需配置这些回放文件。',
+    'measurement-data': '结果放 task_01_xinxixueyuan_1 等任务子目录；点云 scene.json/scene.ply 放 pointcloud_web/任务编号。还需乔木实例数据及测量模型。',
+    'tree-instances': '子目录填写原始任务编号，上传 summary.json、tree_instances.csv 和可选 tree_instances_overview.png。',
+    'models': '测量模型使用 tree_shrub_gnb_v1、green_area_gnb_v1 子目录；巡检 .pt 权重请选择对应专用模型分类。',
 }
 
 FORBIDDEN_NAME = re.compile(r'[\x00-\x1f\x7f]')
@@ -65,6 +96,12 @@ def _safe_name(raw: str | None) -> str:
     return name
 
 
+def _validate_model_target(category: str, subdir: str, name: str) -> None:
+    expected = MODEL_FILENAMES.get(category)
+    if expected and (_safe_subdir(subdir) != Path() or name != expected):
+        raise HTTPException(status_code=422, detail=f'此分类仅接收 {expected}，子目录必须留空。')
+
+
 @router.get('/categories')
 async def list_categories():
     return {
@@ -74,6 +111,7 @@ async def list_categories():
                 'key': key,
                 'label': label,
                 'target': str(CATEGORIES[key].relative_to(DATA_ROOT)),
+                'hint': CATEGORY_HINTS.get(key, ''),
             }
             for key, label in (
                 ('heatmap-videos', '客流热力视频（heatmapdata/videos）'),
@@ -87,6 +125,16 @@ async def list_categories():
                 ('measurement-data', '测量结果（measurement_data）'),
                 ('models', '其他模型（models）'),
                 ('fendai-scenes', '粉黛花三维场景（.ksplat）'),
+                ('telecom-model', '通信基站模型 station2-best.pt'),
+                ('power-model', '杆路线路模型 wire-pole-seg.pt'),
+                ('wall-model', '建筑外墙模型 wall-damage-best.pt'),
+                ('pruning-model', '乔木修剪模型 tree-pruning-best.pt'),
+                ('rose-model', '玫瑰检测模型 rose-detect-best.pt'),
+                ('telecom-tasks', '通信基站任务（视频 + SRT）'),
+                ('rose-tasks', '玫瑰检测任务（视频 + SRT）'),
+                ('roof-reports', '屋顶离线检测结果与报告'),
+                ('pest-data', '病虫害回放视频 / 轨迹 / 报告'),
+                ('tree-instances', '乔木测量实例（summary / CSV）'),
             )
         ],
     }
@@ -131,6 +179,7 @@ async def upload_assets(
     saved, skipped = [], []
     for item in files:
         name = _safe_name(item.filename)
+        _validate_model_target(category, subdir, name)
         destination = target_dir / name
         if destination.exists() and not overwrite:
             skipped.append({'name': name, 'reason': '已存在（未开启覆盖）'})
@@ -184,6 +233,7 @@ async def upload_init(
     if size <= 0:
         raise HTTPException(status_code=422, detail='size 必须为正')
     name = _safe_name(filename)
+    _validate_model_target(category, subdir, name)
     target_dir = base / _safe_subdir(subdir)
     destination = target_dir / name
 

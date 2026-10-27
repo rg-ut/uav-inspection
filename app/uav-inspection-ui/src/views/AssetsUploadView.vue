@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import axios from 'axios'
 import {
   ArrowLeft, CircleCheck, FolderOpen, HardDriveUpload, Pause, Play,
@@ -12,6 +12,7 @@ interface CategoryOption {
   key: string
   label: string
   target: string
+  hint?: string
 }
 
 interface FileEntry {
@@ -75,6 +76,7 @@ const CHUNK_TIMEOUT = 120_000
 const COMPLETE_TIMEOUT = 120_000
 
 const router = useRouter()
+const route = useRoute()
 const categories = ref<CategoryOption[]>([])
 const category = ref('')
 const subdir = ref('')
@@ -85,6 +87,17 @@ const stopping = ref(false)
 const message = reactive({ kind: '' as '' | 'ok' | 'err', text: '' })
 const files = ref<FileEntry[]>([])
 const filesRoot = ref('')
+const selectedCategory = computed(() => categories.value.find(item => item.key === category.value))
+
+function applyUploadQuery() {
+  const requested = route.query.category
+  if (typeof requested === 'string' && categories.value.some(item => item.key === requested)) {
+    category.value = requested
+    subdir.value = typeof route.query.subdir === 'string' ? route.query.subdir : ''
+  }
+}
+
+watch(() => route.query, () => { applyUploadQuery(); void refreshFiles() })
 
 const activeTask = computed(() => tasks.value.find(t => t.status === 'uploading') ?? null)
 const pendingCount = computed(() => tasks.value.filter(t => t.status === 'waiting').length)
@@ -148,6 +161,37 @@ function pauseAll() {
   stopping.value = true
   for (const t of tasks.value) {
     if (t.status === 'uploading') t.controller?.abort()
+  }
+}
+
+function uploadErrorMessage(error: unknown): string {
+  if (axios.isAxiosError(error) && typeof error.response?.data?.detail === 'string') return error.response.data.detail
+  return error instanceof Error ? error.message : String(error)
+}
+
+function updateUploadSummary() {
+  const done = tasks.value.filter(t => t.status === 'done').length
+  const failed = tasks.value.filter(t => t.status === 'error').length
+  const paused = tasks.value.filter(t => t.status === 'paused').length
+  const skipped = tasks.value.filter(t => t.status === 'skipped').length
+  message.kind = failed ? 'err' : 'ok'
+  if (failed) message.text = `${done} 个成功，${failed} 个失败（可单点重试）${paused ? `，${paused} 个已暂停` : ''}`
+  else if (paused) message.text = `${done} 个成功，${paused} 个已暂停（点「继续」接着传）`
+  else message.text = `全部完成：${done} 个文件已保存${skipped ? `，${skipped} 个已跳过` : ''}`
+}
+
+async function resumeTask(t: UploadTask) {
+  if (busy.value) return
+  busy.value = true
+  stopping.value = false
+  message.text = ''
+  try {
+    await startTask(t)
+    updateUploadSummary()
+    await refreshFiles()
+  } finally {
+    busy.value = false
+    stopping.value = false
   }
 }
 
@@ -227,7 +271,7 @@ async function startTask(t: UploadTask) {
       t.note = '已暂停，进度已保留'
     } else {
       t.status = 'error'
-      t.note = error instanceof Error ? error.message : String(error)
+      t.note = uploadErrorMessage(error)
     }
   } finally {
     t.controller = null
@@ -271,7 +315,7 @@ async function uploadSmallBatch(batch: UploadTask[]) {
         t.note = ''
       } else {
         t.status = 'error'
-        t.note = error instanceof Error ? error.message : String(error)
+        t.note = uploadErrorMessage(error)
       }
     }
   }
@@ -306,19 +350,7 @@ async function startUpload() {
       if (stopping.value) break
       await startTask(t)
     }
-    const done = tasks.value.filter(t => t.status === 'done').length
-    const failed = tasks.value.filter(t => t.status === 'error').length
-    const paused = tasks.value.filter(t => t.status === 'paused').length
-    if (failed) {
-      message.kind = 'err'
-      message.text = `${done} 个成功，${failed} 个失败（可单点重试）${paused ? `，${paused} 个已暂停` : ''}`
-    } else if (paused) {
-      message.kind = 'ok'
-      message.text = `${done} 个成功，${paused} 个已暂停（点「继续」接着传）`
-    } else if (done) {
-      message.kind = 'ok'
-      message.text = `全部完成：${done} 个文件已保存`
-    }
+    updateUploadSummary()
     await refreshFiles()
   } finally {
     busy.value = false
@@ -350,6 +382,7 @@ function taskBadgeText(t: UploadTask): string {
 
 onMounted(async () => {
   await loadCategories()
+  applyUploadQuery()
   await refreshFiles()
 })
 </script>
@@ -385,7 +418,7 @@ onMounted(async () => {
             <select
               v-model="category"
               class="w-full min-w-0 rounded-md border border-slate-300 bg-white px-3 py-2 text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
-              @change="refreshFiles()"
+              @change="subdir = ''; refreshFiles()"
             >
               <option v-for="item in categories" :key="item.key" :value="item.key">
                 {{ item.label }}
@@ -403,6 +436,11 @@ onMounted(async () => {
             />
           </label>
         </div>
+
+        <p v-if="selectedCategory" class="rounded-md bg-blue-50 p-3 text-sm text-blue-900" role="status">
+          <span class="block break-all">目标目录：{{ selectedCategory.target }}</span>
+          <span v-if="selectedCategory.hint" class="mt-1 block">{{ selectedCategory.hint }}</span>
+        </p>
 
         <label class="flex cursor-pointer select-none items-start gap-2 text-sm leading-5 text-slate-600 sm:items-center">
           <input v-model="overwrite" type="checkbox" class="h-4 w-4 accent-blue-600" />
@@ -462,14 +500,15 @@ onMounted(async () => {
                 v-else-if="t.status === 'paused'"
                 class="flex items-center gap-1 text-xs font-medium text-blue-600 hover:text-blue-700"
                 :disabled="busy"
-                @click="startTask(t)"
+                @click="resumeTask(t)"
               >
                 <Play :size="13" /> 继续
               </button>
               <button
                 v-else-if="t.status === 'error'"
                 class="flex items-center gap-1 text-xs font-medium text-blue-600 hover:text-blue-700"
-                @click="startTask(t)"
+                :disabled="busy"
+                @click="resumeTask(t)"
               >
                 <RotateCcw :size="13" /> 重试
               </button>

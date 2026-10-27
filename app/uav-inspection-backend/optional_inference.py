@@ -21,8 +21,9 @@ def load_yolo_model(path: Path | str) -> Any:
     model_path = Path(path)
     if not model_path.is_file():
         raise InferenceUnavailableError(
-            f"未安装可选模型 {model_path.name}。请将 02-data 数据包放到 01-app 旁边，"
-            "或设置 UAV_DATA_DIR；页面浏览和文件上传不受影响。"
+            f"未安装可选模型 {model_path.name}。请在素材上传中心选择对应模块的模型分类，"
+            "保留指定文件名且子目录留空；也可安装 02-data 数据包或设置 UAV_DATA_DIR。"
+            "页面浏览和文件上传不受影响。"
         )
     try:
         from ultralytics import YOLO

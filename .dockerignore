@@ -6,3 +6,6 @@
 app/02-data
 app/delivery
 app/uav-inspection-backend/fendaidata
+
+# Local account/session database
+app/uav-inspection-backend/auth/

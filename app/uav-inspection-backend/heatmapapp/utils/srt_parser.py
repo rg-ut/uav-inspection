@@ -6,27 +6,30 @@ def parse_dji_srt_file(srt_path: str):
     """
     telemetry_dict = {}
     
-    with open(srt_path, 'r', encoding='utf-8') as f:
+    with open(srt_path, 'r', encoding='utf-8-sig') as f:
         content = f.read()
         
     # 按空行分割每个字幕块
-    blocks = content.strip().split('\n\n')
+    blocks = re.split(r'\n\s*\n', content.strip())
     
     for block in blocks:
         lines = block.split('\n')
-        if len(lines) < 4:
+        if len(lines) < 3:
             continue
             
         # 1. 提取帧号 (假设每 33ms 一帧，我们简化为字幕块的索引，或者从 FrameCnt 提取)
-        frame_match = re.search(r'FrameCnt:\s*(\d+)', lines[2])
+        # DJI subtitles may put the timestamp and GPS on different lines.
+        frame_match = re.search(r'FrameCnt:\s*(\d+)', block)
+        if not frame_match and not lines[0].strip().isdigit():
+            continue
         frame_id = int(frame_match.group(1)) if frame_match else int(lines[0])
         
         # 2. 提取时间戳
-        time_match = re.search(r'\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3}', lines[2])
+        time_match = re.search(r'\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3}', block)
         timestamp = time_match.group(0) if time_match else ""
         
         # 3. 提取核心遥测数据 (使用正则表达式)
-        data_line = lines[3]
+        data_line = block
         
         lat = re.search(r'\[latitude:\s*([-\d.]+)\]', data_line)
         lon = re.search(r'\[longitude:\s*([-\d.]+)\]', data_line)
