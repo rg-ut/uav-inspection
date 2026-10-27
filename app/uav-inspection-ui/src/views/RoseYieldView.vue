@@ -460,7 +460,7 @@ import { parseSrt, type TelemetryFrame } from '../utils/srtParser'
 import InspectionHeader from '../components/common/InspectionHeader.vue'
 import DetectionVideoFrame from '../components/common/DetectionVideoFrame.vue'
 import FloatingNotice from '../components/common/FloatingNotice.vue'
-import { BASE_URL } from '../utils/webroot'
+import { BASE_URL, webPath } from '../utils/webroot'
 
 const missingPlotImages = ref<Record<number, boolean>>({})
 
@@ -555,7 +555,7 @@ async function confirmUploadTask() {
     const res = await fetch(`${API_BASE}/api/v1/rose/tasks/upload`, { method: 'POST', body: form })
     if (!res.ok) throw new Error(`上传失败: ${res.status}`)
     const data = await res.json()
-    const videoUrl = `${API_BASE}${data.video_path}`
+    const videoUrl = webPath(data.video_path)
 
     // 保存任务记录
     const record: TaskRecord = {
@@ -1308,7 +1308,7 @@ async function syncExistingTasks() {
         videoName: t.video_name,
         srtName: t.srt_name,
         // 后端返回的 video_url 已带部署前缀，避免重复拼接
-        videoUrl: t.video_url.startsWith(API_BASE) ? t.video_url : `${API_BASE}${t.video_url}`,
+        videoUrl: webPath(t.video_url),
         srtText: srtText,
         createdAt: new Date().toLocaleString('zh-CN'),
       }

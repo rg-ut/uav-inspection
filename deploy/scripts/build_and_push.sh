@@ -5,7 +5,8 @@ REG="${UAV_REGISTRY:-127.0.0.1:15000}"
 IMAGE="$REG/uav/inspection"
 
 echo "[build] 开始构建 $IMAGE:latest（首次构建较久，含前端 npm 与后端 pip；依赖层不变时走缓存分钟级）"
-sudo docker build -f deploy/docker/Dockerfile --build-arg VITE_BASE="${VITE_BASE:-/uav/}" -t "$IMAGE:latest" .
+sudo docker build -f deploy/docker/Dockerfile --build-arg VITE_BASE="${VITE_BASE:-/uav/}" \
+  --build-arg UAV_INSTALL_INFERENCE="${UAV_INSTALL_INFERENCE:-0}" -t "$IMAGE:latest" .
 echo "[build] 完成，推送到 registry"
 sudo docker push "$IMAGE:latest"
 echo "[build] $IMAGE:latest 已入库"
