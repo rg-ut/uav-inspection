@@ -21,6 +21,7 @@ from treeapp.api import detect as pruning_detect
 from vegetationapp import api as vegetation_api
 from assetsapp import api as assets_api
 from fendaiapp import api as fendai_api
+from authapp import api as auth_api
 
 app = FastAPI(title='园区无人机巡检系统')
 
@@ -49,6 +50,7 @@ FRONTEND_DIST = Path(os.getenv('UAV_FRONTEND_DIST', str(PROJECT_ROOT / 'uav-insp
 for path in [VIDEO_PATH, SNAPSHOT_PATH, PEST_MEDIA_PATH, ROSE_TASKS_PATH, TELECOM_MEDIA_PATH, TELECOM_TASKS_PATH, ROOF_MEDIA_PATH, ROOF_REPORTS_PATH, POWER_MEDIA_PATH, WALL_MEDIA_PATH, PRUNING_MEDIA_PATH, ROSE_PICTURES_PATH]:
     os.makedirs(path, exist_ok=True)
 
+app.include_router(auth_api.router, prefix='/api/v1/auth', tags=['账号'])
 app.include_router(tasks.router, prefix='/api/v1/tasks', tags=['任务'])
 app.include_router(websocket.router, prefix='/api/v1/ws', tags=['实时推理'])
 app.include_router(predict.router, prefix='/api/v1/predict', tags=['客流预测'])

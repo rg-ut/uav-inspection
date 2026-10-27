@@ -1,5 +1,6 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import HomeView from '../views/HomeView.vue'
+import { loadAccount, account } from '../stores/auth'
 
 const PestInspectionView = () => import('../views/PestInspectionView.vue')
 const RoseYieldView = () => import('../views/RoseYieldView.vue')
@@ -32,6 +33,13 @@ const router = createRouter({
     { path: '/rose-yield', name: 'rose-yield', component: RoseYieldView },
     { path: '/fendai-flower', name: 'fendai-flower', component: FendaiFlowerWalkthroughView },
   ],
+})
+
+router.beforeEach(async to => {
+  if (to.path === '/') return true
+  try { await loadAccount() } catch { return {path:'/',query:{login:'1',redirect:to.fullPath}} }
+  if (!account.user) return {path:'/',query:{login:'1',redirect:to.fullPath}}
+  return true
 })
 
 export default router

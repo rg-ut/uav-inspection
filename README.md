@@ -230,3 +230,9 @@ cd ../uav-inspection-ui && npm run build
 ## License
 
 MIT
+
+## 平台账号
+
+首页支持登录、注册和退出。默认演示账号为 **admin**，密码为 **admin123**，也会显示在登录区域下方。
+注册后自动登录，刷新保留会话；未登录进入模块时会先提示登录，再返回所选模块。
+账号使用服务端数据库保存，详见 [账号说明](app/docs/accounts.md)。
