@@ -196,6 +196,7 @@ const frozenTargets = computed(() => {
   return videoGIS.currentTargets.value;
 });
 let lastTargets: TrackTarget[] = [];
+let liveMapCentered = false;
 
 // 处理播放/暂停
 const handlePlayState = (state: boolean) => {
@@ -272,6 +273,21 @@ const cachePreloadFrame = (frameData: WSFrameMessage) => {
   if (frameData.fps) videoFps.value = frameData.fps;
   if (frameData.totalFrames) {
     setPreloadProgress(Math.max(preloadProgress.value, (frameData.frameId / frameData.totalFrames) * 100));
+  }
+
+  const telemetry = frameData.telemetry;
+  if (!hasValidTelemetry(telemetry)) return;
+
+  const index = telemetryData.value.findIndex((item) => item.frameId === telemetry.frameId);
+  if (index >= 0) {
+    telemetryData.value[index] = telemetry;
+  } else {
+    telemetryData.value.push(telemetry);
+  }
+
+  if (!liveMapCentered || isFollowMode.value) {
+    mapCenter.value = [telemetry.latitude, telemetry.longitude];
+    liveMapCentered = true;
   }
 };
 
@@ -487,6 +503,7 @@ const handleTaskChange = async (task: PatrolTask) => {
   headcountTrend.value = 0;
   isDetectionPaused.value = false;
   lastTargets = [];
+  liveMapCentered = false;
   isLiveMode.value = task.status === 'PROCESSING' || task.status === 'PENDING';
   videoGIS.currentFrameId.value = 0;
   videoGIS.currentTelemetry.value = null;
@@ -545,6 +562,7 @@ const resetActiveTaskView = () => {
   isDetectionPaused.value = false;
   isLiveMode.value = false;
   lastTargets = [];
+  liveMapCentered = false;
   videoGIS.currentFrameId.value = 0;
   videoGIS.currentTelemetry.value = null;
   videoGIS.currentTargets.value = [];
