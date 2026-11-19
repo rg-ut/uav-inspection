@@ -10,5 +10,5 @@ python-multipart==0.0.32
 websockets==16.1.1
 aiofiles==25.1.0
 opencv-python==4.14.0.94
-numpy==2.5.2
+numpy==2.5.3
 Pillow==12.3.0
