@@ -208,12 +208,12 @@ const handleNavigation = async (path: string) => {
             <h2 class="text-xl font-bold text-slate-800 sm:text-2xl">{{ group.title }}</h2>
           </div>
 
-          <div class="flex flex-col gap-3 sm:gap-5" :class="group.items.length > 4 ? 'max-h-[484px] sm:max-h-[636px] overflow-y-auto pr-1' : ''">
+          <div class="flex flex-col gap-3 sm:gap-5" :class="group.items.length > 4 ? 'module-scroll max-h-[484px] sm:max-h-[636px] overflow-y-auto pr-1' : ''">
             <button
               v-for="item in group.items"
               :key="item.name"
               @click="handleNavigation(item.path)"
-              class="group flex min-h-28 w-full items-center rounded-lg border p-3 text-left shadow-[0_8px_24px_rgba(15,23,42,0.05)] transition-all hover:-translate-y-1 hover:shadow-lg sm:h-36 sm:p-5"
+              class="group flex min-h-28 w-full shrink-0 items-center rounded-lg border p-3 text-left shadow-[0_8px_24px_rgba(15,23,42,0.05)] transition-all hover:-translate-y-1 hover:shadow-lg sm:h-36 sm:p-5"
               :class="[moduleThemes[item.theme].card, moduleThemes[item.theme].hover]"
             >
               <div class="flex w-20 shrink-0 flex-col items-center justify-center sm:w-28">
@@ -238,4 +238,4 @@ const handleNavigation = async (path: string) => {
 
 <style scoped>
 .home-account{background:white;border:1px solid #e2e8f0;border-radius:10px;margin-bottom:25px;box-shadow:0 5px 20px -18px #0f172a40;padding:20px 24px;color:#475569}.home-account-main{display:flex;align-items:center;gap:14px}.home-account-avatar{height:48px;width:48px;display:grid;place-items:center;border:1px solid #dbeafe;background:linear-gradient(140deg,#eff6ff,#eef2ff);color:#4169d4;border-radius:12px;flex-shrink:0}.home-account-copy h2{font-size:16px;color:#1e293b;font-weight:650}.home-account-copy p{font-size:12px;color:#94a3b8;margin-top:6px}.home-account-actions{margin-left:auto;display:flex;gap:9px;align-items:center}.home-account-actions button{display:flex;align-items:center;justify-content:center;gap:6px;padding:9px 18px;font-size:12px;font-weight:600;border:1px solid transparent;border-radius:6px;white-space:nowrap}.home-login{background:#315bd2;color:white;box-shadow:0 3px 8px #315bd21a}.home-login:hover{background:#254bb7}.home-account-actions button.home-register{background:white;color:#526785;border-color:#dce3ef}.home-account-actions button.home-register:hover{background:#f8fafc}.home-account-actions button:disabled{opacity:.5;cursor:not-allowed}.home-account-hint{display:flex;align-items:center;gap:6px;font-size:12px;color:#64748b;border-top:1px solid #f1f5f9;margin-top:16px;padding-top:13px}.home-account-hint strong{font-family:ui-monospace,monospace;color:#334155;font-weight:500;font-size:13px}.home-account-hint>span{height:10px;width:1px;background:#e2e8f0;margin:0 9px}.home-account-error{font-size:12px;color:#be123c;margin-top:12px;line-height:1.7}@media(max-width:600px){.home-account{padding:17px;margin-bottom:17px}.home-account-main{flex-wrap:wrap;gap:12px}.home-account-avatar{height:42px;width:42px}.home-account-copy h2{font-size:14px}.home-account-copy p{font-size:11px}.home-account-actions{margin-left:0;width:100%;padding-top:2px}.home-account-actions button{flex:1}.home-account-hint{gap:3px;font-size:10px}.home-account-hint strong{font-size:11px}.home-account-hint>span{margin:0 5px}}
-</style>
+.module-scroll{scrollbar-width:none;-ms-overflow-style:none}.module-scroll::-webkit-scrollbar{display:none}</style>
