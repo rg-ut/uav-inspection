@@ -23,8 +23,6 @@ from pathlib import Path
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse
 
-from authapp.api import require_account
-from wallapp.workflow import admin as wall_admin
 from deployment_paths import DATA_ROOT, backend_path
 from browser_video import store_video
 
@@ -93,7 +91,7 @@ CATEGORY_HINTS = {
     **{key: f'文件名必须为 {name}，子目录留空。上传可信的训练权重后重新检查模块。' for key, name in MODEL_FILENAMES.items()},
     'heatmap-model': '上传 renliu.pt，子目录留空；还需在服务器安装 AI 推理依赖。',
     'wall-media': '此目录供旧回放工具使用。新版外墙工作台请使用上方“上传外墙任务”，视频会绑定当前账号并生成任务。',
-    'wall-model': '可信 PT 权重需命名为 wall-damage-best.pt，并安装推理依赖；新版工作台也支持无需 PyTorch 的单类别 ONNX 模型。外墙模型上传需要 UAV_WALL_ADMINS 授权。',
+    'wall-model': '可信 PT 权重需命名为 wall-damage-best.pt，并安装推理依赖；新版工作台也支持无需 PyTorch 的单类别 ONNX 模型，所有登录账号均可上传。',
     'telecom-tasks': '子目录填写任务编号，视频使用 H.264 MP4；SRT 字幕可选，仅定位与飞行数据显示需要字幕。模块内上传任务支持视频转码。',
     'rose-tasks': '子目录填写任务编号，视频使用 H.264 MP4；SRT 字幕可选，仅定位与飞行数据显示需要字幕。模块内上传任务支持视频转码。',
     'roof-media': '子目录填写任务编号；屋顶模块展示离线结果，单独上传视频不会自动生成缺陷。',
@@ -124,11 +122,6 @@ def _safe_name(raw: str | None) -> str:
     if not name or name in ('.', '..') or FORBIDDEN_NAME.search(name):
         raise HTTPException(status_code=422, detail='非法文件名')
     return name
-
-
-def _authorize_wall_model(category: str, request: Request) -> None:
-    if category == 'wall-model' and not wall_admin(require_account(request)['username']):
-        raise HTTPException(status_code=403, detail='只有管理员可以上传外墙模型')
 
 
 def _validate_model_target(category: str, subdir: str, name: str) -> None:
@@ -210,7 +203,6 @@ async def upload_assets(
     base = CATEGORIES.get(category)
     if base is None:
         raise HTTPException(status_code=422, detail=f'未知分类：{category}')
-    _authorize_wall_model(category, request)
     target_dir = base / _safe_subdir(subdir)
     target_dir.mkdir(parents=True, exist_ok=True)
 
@@ -276,7 +268,6 @@ async def upload_init(
     base = CATEGORIES.get(category)
     if base is None:
         raise HTTPException(status_code=422, detail=f'未知分类：{category}')
-    _authorize_wall_model(category, request)
     if size <= 0:
         raise HTTPException(status_code=422, detail='size 必须为正')
     name = _safe_name(filename)
@@ -348,7 +339,6 @@ async def upload_chunk(
     if index < 0:
         raise HTTPException(status_code=422, detail='非法分片号')
     meta = json.loads(meta_path.read_text())
-    _authorize_wall_model(meta['category'], request)
     total_chunks = (meta['size'] + meta['chunk_size'] - 1) // meta['chunk_size']
     if index >= total_chunks:
         raise HTTPException(status_code=422, detail=f'分片号越界（共 {total_chunks} 片）')
@@ -379,7 +369,6 @@ async def upload_complete(request: Request, upload_id: str = Form(...)):
     if not meta_path.is_file():
         raise HTTPException(status_code=404, detail='uploadId 不存在')
     meta = json.loads(meta_path.read_text())
-    _authorize_wall_model(meta['category'], request)
     base = CATEGORIES.get(meta['category'])
     target_dir = base / _safe_subdir(meta['subdir'])
     target_dir.mkdir(parents=True, exist_ok=True)

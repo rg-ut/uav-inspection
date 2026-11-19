@@ -2,7 +2,7 @@
 from PIL import Image, ImageDraw, ImageOps
 
 from wallapp.report import _font, _paragraph, PAGE_SIZE, MARGIN
-from wallapp.workflow import ROOT, now
+from wallapp.workflow import KIND_LABELS, ROOT, now
 
 
 def generate(path, task, counts, findings, runs):
@@ -24,7 +24,7 @@ def generate(path, task, counts, findings, runs):
         f"巡检位置　{task['building']} · {task['facade']}",
         f"任务编号　{task['id']}",
         f"生成时间　{now()}",
-        f"疑似待复核 {counts['pending']} 处　已确认脱落 {counts['confirmed']} 处",
+        f"疑似待复核 {counts['pending']} 处　已确认缺陷 {counts['confirmed']} 处",
         f"已派单 {counts['assigned']} 处　已修复 {counts['completed']} 处",
     ]
     if run:
@@ -47,9 +47,11 @@ def generate(path, task, counts, findings, runs):
             screenshot = ImageOps.contain(original.convert('RGB'), (width, 900))
             pages[-1].paste(screenshot, (MARGIN, MARGIN + 85))
         y = MARGIN + 115 + screenshot.height
-        state = '已确认脱落' if finding['state'] == 'confirmed' else '疑似待复核'
-        y = _paragraph(draw, (MARGIN, y), f"{state}　视频 {finding['evidence_time']:.1f} 秒",
+        state = '已确认' if finding['state'] == 'confirmed' else '疑似待复核'
+        kind = KIND_LABELS.get(finding['kind'], '面砖脱落')
+        location = ' · '.join(filter(None, [finding['floor'] or '楼层待核实', finding['zone']]))
+        y = _paragraph(draw, (MARGIN, y), f"{kind}　{state}　视频 {finding['evidence_time']:.1f} 秒",
                        _font(30, True), '#0f172a', width)
-        y = _paragraph(draw, (MARGIN, y + 12), finding['floor'] or '楼层待核实', _font(26), '#334155', width)
+        y = _paragraph(draw, (MARGIN, y + 12), location, _font(26), '#334155', width)
         _paragraph(draw, (MARGIN, y + 12), finding['note'][:350], _font(24), '#334155', width)
     pages[0].save(path, 'PDF', resolution=150, save_all=True, append_images=pages[1:])

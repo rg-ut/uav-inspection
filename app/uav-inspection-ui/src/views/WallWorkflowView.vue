@@ -103,6 +103,7 @@ const findingId = ref('')
 const orderId = ref('')
 const floor = ref('')
 const note = ref('')
+const kind = ref('TileSpalling')
 const assistantOpen = ref(false)
 const prompt = ref('')
 const assistantReply = ref('我可以帮你找待复核记录、跳到指定时间，或说明怎样上传字幕。')
@@ -110,9 +111,10 @@ const draftPreview = ref(false)
 const reviewPanel = ref<HTMLElement>()
 
 const labels: Record<FindingState, string> = { pending: '待复核', confirmed: '已确认', dismissed: '已排除', merged: '已合并' }
+const kindLabels: Record<string, string> = { Crack: '裂缝', Seepage: '渗水', TileSpalling: '面砖脱落' }
 const cards = [
   { key: 'pending', label: '疑似待复核', icon: SearchCheck },
-  { key: 'confirmed', label: '已确认脱落', icon: ClipboardCheck },
+  { key: 'confirmed', label: '已确认缺陷', icon: ClipboardCheck },
   { key: 'assigned', label: '已派单', icon: Wrench },
   { key: 'completed', label: '已修复', icon: CircleCheck },
 ] as const
@@ -291,17 +293,6 @@ function submitUpload() {
     }
   })
 }
-function uploadSubtitle(event: Event) {
-  const value = file(event)
-  const id = taskId.value
-  if (!value || !id) return
-  void act(async () => {
-    await wallWorkflow.subtitle(id, value)
-    await refresh(id)
-    await loadSubtitle(current.value?.task.subtitle_url)
-  }, '字幕已保存。')
-  ;(event.target as HTMLInputElement).value = ''
-}
 function uploadModel(event: Event) {
   const value = file(event)
   if (!value) return
@@ -328,11 +319,12 @@ function openFinding(finding: Finding) {
   findingId.value = finding.id
   floor.value = finding.floor
   note.value = finding.note
+  kind.value = finding.kind || 'TileSpalling'
   seek(finding.evidence_time)
 }
 function review(finding: Finding, state: FindingState) {
   void act(async () => {
-    await wallWorkflow.review(taskId.value, finding, state, floor.value, note.value)
+    await wallWorkflow.review(taskId.value, finding, state, floor.value, note.value, kind.value)
     await refresh()
   }, '复核结果已保存。')
 }
@@ -380,7 +372,7 @@ async function ask(text = prompt.value, useProvider = true): Promise<void> {
   if (!text.trim()) return
   prompt.value = ''
   if (/字幕|SRT/i.test(text) && /上传|添加|怎么|如何/.test(text)) {
-    assistantReply.value = '选择一个任务，在飞行数据下方点“添加字幕”，选和视频对应的 SRT 文件。'
+    assistantReply.value = '新建任务时在“上传视频”表单里选择对应的 SRT 文件即可。'
   } else if (/待复核|疑似/.test(text) && current.value) {
     const direction = text.match(/([北南东西])(?:立面|面)/)?.[1]
     if (direction && !current.value.task.facade.includes(direction)) {
@@ -540,7 +532,7 @@ async function ask(text = prompt.value, useProvider = true): Promise<void> {
               </details>
               <button v-if="!analyzing" class="primary" :disabled="busy || !model || selectedModel?.ready === false"
                 @click="act(async () => { realtime = false; await wallWorkflow.run(taskId, model, sensitivity, mode, iou); await refresh() }, '分析已开始，可继续查看视频。')">开始检测</button>
-              <p v-if="!model" class="text-sm text-slate-600">{{ canUploadModel ? "开始检测前，请在检测设置中添加模型。" : "开始检测前，请联系管理员添加模型。" }}</p>
+              <p v-if="!model" class="text-sm text-slate-600">开始检测前，请在检测设置中添加模型。</p>
             </div>
           </section>
           <section class="wall-panel panel">
@@ -556,7 +548,6 @@ async function ask(text = prompt.value, useProvider = true): Promise<void> {
             </dl>
             <p v-else class="mt-3 text-sm text-slate-600">{{ telemetryError ? '字幕暂时无法读取。' : !current.task.subtitle_url ? '暂无字幕数据。' : '当前画面没有可用的定位数据。' }}</p>
             <div v-if="manager" class="mt-4 space-y-3 text-sm">
-              <label>{{ current.task.subtitle_url ? '更换字幕' : '添加字幕' }}<input type="file" accept=".srt" class="field" :disabled="busy" @change="uploadSubtitle" /></label>
               <form v-if="current.task.subtitle_url" class="flex flex-wrap items-end gap-2" @submit.prevent="saveOffset(subtitleOffset)">
                 <label>字幕延后秒数<input v-model.number="subtitleOffset" type="number" step="0.1" class="field" /></label>
                 <button class="button" :disabled="busy">保存</button>
@@ -595,16 +586,17 @@ async function ask(text = prompt.value, useProvider = true): Promise<void> {
                     :aria-label="'选择 ' + time(finding.evidence_time) + ' 的发现'" class="size-4 shrink-0 accent-teal-700" />
                   <button class="flex min-w-0 flex-1 items-center gap-3 rounded-md p-1 text-left hover:bg-slate-50" @click="openFinding(finding)">
                     <img v-if="finding.image_url" :src="finding.image_url" alt="" loading="lazy" class="h-12 w-16 rounded bg-slate-100 object-cover" />
-                    <span class="min-w-0 flex-1"><span class="block text-sm font-medium">{{ time(finding.evidence_time) }} · {{ finding.floor || '楼层待核实' }}</span><span class="block text-sm text-slate-600">{{ labels[finding.state] }}</span></span>
+                    <span class="min-w-0 flex-1"><span class="block text-sm font-medium">{{ kindLabels[finding.kind] || '缺陷' }} · {{ time(finding.evidence_time) }} · {{ finding.floor || '楼层待核实' }}</span><span class="block text-sm text-slate-600">{{ labels[finding.state] }}<template v-if="finding.zone"> · {{ finding.zone }}</template></span></span>
                     <span class="text-sm text-teal-800">查看</span>
                   </button>
                 </li>
-                <li v-if="!visibleFindings.length" class="py-4 text-sm text-slate-600">{{ !run && !current.findings.length ? '还未检测。' : run?.state === 'completed' && !current.findings.length ? '本次已检测画面未发现疑似脱落。' : '暂无符合条件的记录。' }}</li>
+                <li v-if="!visibleFindings.length" class="py-4 text-sm text-slate-600">{{ !run && !current.findings.length ? '还未检测。' : run?.state === 'completed' && !current.findings.length ? '本次已检测画面未发现疑似缺陷。' : '暂无符合条件的记录。' }}</li>
               </ul>
               <div v-if="currentFinding" class="rounded-md border border-slate-200 p-3">
                 <img v-if="currentFinding.image_url" :src="currentFinding.image_url" alt="缺陷检测截图" class="max-h-72 w-full rounded-md bg-slate-100 object-contain" />
-                <p class="mt-2 text-sm text-slate-600">视频 {{ localTime(currentFinding.evidence_time) }} · {{ labels[currentFinding.state] }}</p>
+                <p class="mt-2 text-sm text-slate-600">{{ kindLabels[currentFinding.kind] || '缺陷' }} · 视频 {{ localTime(currentFinding.evidence_time) }} · {{ labels[currentFinding.state] }}<template v-if="currentFinding.zone"> · {{ currentFinding.zone }}</template></p>
                 <template v-if="manager">
+                  <label class="mt-3 block text-sm">缺陷类型<select v-model="kind" class="field"><option value="Crack">裂缝</option><option value="Seepage">渗水</option><option value="TileSpalling">面砖脱落</option></select></label>
                   <label class="mt-3 block text-sm">楼层<input v-model.trim="floor" class="field" maxlength="60" placeholder="例如 3 层窗下" /></label>
                   <label class="mt-2 block text-sm">位置或复核说明<textarea v-model.trim="note" class="field" maxlength="1500" rows="2" /></label>
                   <div class="mt-3 flex flex-wrap gap-2">

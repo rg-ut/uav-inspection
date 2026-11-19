@@ -19,6 +19,35 @@ log = logging.getLogger(__name__)
 wake = Event()
 MODEL_DIR = ROOT / 'models'
 
+# 三类缺陷（与老版外墙报告口径一致）；未知类别默认归为面砖脱落。
+KIND_ALIASES = {
+    'crack': 'Crack',
+    'seepage': 'Seepage',
+    'water_stain': 'Seepage',
+    'water_damage': 'Seepage',
+    'tile_spalling': 'TileSpalling',
+    'tilespalling': 'TileSpalling',
+    'spalling': 'TileSpalling',
+    'wall_damage': 'TileSpalling',
+    'facade_damage': 'TileSpalling',
+    'damage': 'TileSpalling',
+    'hollowing': 'TileSpalling',
+}
+ZONE_ROWS = ('上部', '中部', '下部')
+ZONE_COLUMNS = ('左侧', '中央', '右侧')
+
+
+def finding_kind(name):
+    return KIND_ALIASES.get((name or '').strip().lower(), 'TileSpalling')
+
+
+def finding_zone(bbox, shape):
+    height, width = shape[:2]
+    x1, y1, x2, y2 = (float(value) for value in bbox)
+    center_x = (x1 + x2) / 2 / max(1.0, width)
+    center_y = (y1 + y2) / 2 / max(1.0, height)
+    return f"{ZONE_ROWS[min(2, int(center_y * 3))]}{ZONE_COLUMNS[min(2, int(center_x * 3))]}"
+
 
 def model_path(version):
     if version == 'installed':
@@ -115,8 +144,7 @@ def add_frame(run, time, detections, frame, tracks):
     evidence_dir.mkdir(parents=True, exist_ok=True)
     updates = []
     for detection in sorted(detections, key=lambda item: item['conf'], reverse=True):
-        if detection['name'] != 'TileSpalling':
-            continue
+        kind = finding_kind(detection.get('name'))
         box = detection['bbox']
         score = detection['conf']
         candidates = [track for track in tracks if track.id in available and 0 <= time - track.last <= 1.5]
@@ -153,12 +181,12 @@ def add_frame(run, time, detections, frame, tracks):
         for track, box, evidence in updates:
             if evidence:
                 conn.execute(
-                    """INSERT INTO findings(id,task_id,run_id,first_time,last_time,evidence_time,score,bbox,evidence,source)
-                       VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET
+                    """INSERT INTO findings(id,task_id,run_id,kind,zone,first_time,last_time,evidence_time,score,bbox,evidence,source)
+                       VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET
                        last_time=excluded.last_time,evidence_time=excluded.evidence_time,score=excluded.score,
                        bbox=excluded.bbox,evidence=excluded.evidence WHERE findings.state='pending'""",
-                    (track.id, run['task_id'], run['id'], track.first, time, time, track.score,
-                     json.dumps(box), evidence, 'model'),
+                    (track.id, run['task_id'], run['id'], kind, finding_zone(box, frame.shape),
+                     track.first, time, time, track.score, json.dumps(box), evidence, 'model'),
                 )
                 current = conn.execute('SELECT evidence FROM findings WHERE id=?', (track.id,)).fetchone()
                 if current['evidence'] != evidence:

@@ -50,7 +50,8 @@ class WallWorkflowTests(unittest.TestCase):
         visitor = TestClient(self.app)
         self.login(maintenance, 'repairer')
         self.login(visitor, 'visitor')
-        self.assertEqual(visitor.post(api + '/models', files={'file': ('model.onnx', b'x')}).status_code, 403)
+        # 模型上传不再限制管理员：普通账号可直接上传，但无效文件仍按 422 拒绝。
+        self.assertEqual(visitor.post(api + '/models', files={'file': ('model.onnx', b'x')}).status_code, 422)
         self.assertEqual(self.client.post(api + '/models', files={'file': ('bad.onnx', b'x')}).status_code, 422)
 
         path = Path(self.temp.name) / 'wall-sample.avi'

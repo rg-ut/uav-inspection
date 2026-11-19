@@ -19,7 +19,7 @@ from authapp.api import require_account
 from uav_url_prefix import prefixed
 from wallapp import analysis, intake, workflow_report
 from wallapp.api import assistant, live
-from wallapp.workflow import ROOT, admin, database, new_id, now, record, summary, task_for
+from wallapp.workflow import KIND_LABELS, ROOT, admin, database, new_id, now, record, summary, task_for
 
 router = APIRouter()
 router.include_router(intake.router)
@@ -147,14 +147,11 @@ def list_models(account=Depends(require_account)):
                 versions.append({'id': metadata.stem, 'name': str(info['name']), 'ready': True, 'reason': ''})
             except (OSError, ValueError, KeyError, TypeError):
                 continue
-    return answer({'models': versions, 'can_upload': admin(account['username']),
-                   'upload_hint': '模型上传仅限 UAV_WALL_ADMINS 中配置的账号；请联系部署人员授权。'})
+    return answer({'models': versions, 'can_upload': True, 'upload_hint': ''})
 
 
 @router.post('/models')
 def upload_model(file: UploadFile = File(...), account=Depends(require_account)):
-    if not admin(account['username']):
-        raise HTTPException(403, '只有管理员可以上传检测模型')
     filename = (file.filename or '').replace('\\', '/').rsplit('/', 1)[-1]
     if Path(filename).suffix.lower() != '.onnx':
         raise HTTPException(422, '请选择单类别 YOLO ONNX 模型，导出时关闭模型内合并框')
@@ -236,6 +233,7 @@ def cancel_run(task_id: str, run_id: str, account=Depends(require_account)):
 
 class Review(BaseModel):
     state: Literal['pending', 'confirmed', 'dismissed']
+    kind: Literal['Crack', 'Seepage', 'TileSpalling'] | None = None
     floor: str = Field(default='', max_length=60)
     note: str = Field(default='', max_length=1500)
 
@@ -262,8 +260,9 @@ def review(task_id: str, finding_id: str, payload: Review, account=Depends(requi
         before = get_finding(conn, task_id, finding_id)
         if payload.state != 'confirmed' and linked_order(conn, finding_id):
             raise HTTPException(409, '该记录已关联工单，请先处理工单')
-        conn.execute('UPDATE findings SET state=?,floor=?,note=? WHERE id=?',
-                     (payload.state, payload.floor.strip(), payload.note.strip(), finding_id))
+        conn.execute('UPDATE findings SET state=?,floor=?,note=?,kind=? WHERE id=?',
+                     (payload.state, payload.floor.strip(), payload.note.strip(),
+                      payload.kind or before['kind'], finding_id))
         record(conn, task_id, finding_id, user, 'finding_reviewed', f'{before["state"]} → {payload.state}')
         return answer(finding_data(get_finding(conn, task_id, finding_id)))
 
@@ -459,7 +458,7 @@ def export_csv(task_id: str, account=Depends(require_account)):
         state_names = {'pending': '待复核', 'confirmed': '已确认', 'dismissed': '已排除',
                        'draft': '草稿', 'assigned': '待接单', 'in_progress': '维修中',
                        'review': '待验收', 'completed': '已完成'}
-        writer.writerow(['任务', '楼栋', '立面', '缺陷编号', '复核状态', '楼层', '视频秒数', '工单编号', '工单状态'])
+        writer.writerow(['任务', '楼栋', '立面', '缺陷编号', '缺陷类型', '缺陷方位', '复核状态', '楼层', '视频秒数', '工单编号', '工单状态'])
         rows = conn.execute("""SELECT f.*,o.id AS order_id,o.state AS order_state FROM findings f
                                LEFT JOIN (order_findings ofd JOIN work_orders o ON o.id=ofd.order_id AND o.state<>'cancelled')
                                ON ofd.finding_id=f.id WHERE f.task_id=? AND f.state NOT IN ('merged','superseded')
@@ -467,6 +466,7 @@ def export_csv(task_id: str, account=Depends(require_account)):
                             (task_id,))
         for row in rows:
             writer.writerow(map(safe_csv, [task['name'], task['building'], task['facade'], row['id'],
+                                          KIND_LABELS.get(row['kind'], row['kind']), row['zone'],
                                           state_names[row['state']], row['floor'], row['evidence_time'],
                                           row['order_id'] or '', state_names.get(row['order_state'], '')]))
         return Response('\ufeff' + buf.getvalue(), media_type='text/csv',

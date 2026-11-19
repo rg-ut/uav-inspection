@@ -12,6 +12,8 @@ from deployment_paths import backend_path
 ROOT = backend_path('walldata', 'workflow')
 DB = ROOT / 'inspection.sqlite3'
 
+KIND_LABELS = {'Crack': '裂缝', 'Seepage': '渗水', 'TileSpalling': '面砖脱落'}
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS tasks (
     id TEXT PRIMARY KEY, owner TEXT NOT NULL, name TEXT NOT NULL,
@@ -29,6 +31,7 @@ CREATE TABLE IF NOT EXISTS runs (
 CREATE TABLE IF NOT EXISTS findings (
     id TEXT PRIMARY KEY, task_id TEXT NOT NULL REFERENCES tasks(id),
     run_id TEXT REFERENCES runs(id), state TEXT NOT NULL DEFAULT 'pending',
+    kind TEXT NOT NULL DEFAULT 'TileSpalling', zone TEXT NOT NULL DEFAULT '',
     floor TEXT NOT NULL DEFAULT '', note TEXT NOT NULL DEFAULT '',
     first_time REAL NOT NULL, last_time REAL NOT NULL, evidence_time REAL NOT NULL,
     score REAL NOT NULL, bbox TEXT NOT NULL, evidence TEXT, source TEXT NOT NULL
@@ -64,6 +67,14 @@ def new_id():
     return uuid.uuid4().hex
 
 
+def migrate(conn):
+    columns = {row[1] for row in conn.execute('PRAGMA table_info(findings)')}
+    if 'kind' not in columns:
+        conn.execute("ALTER TABLE findings ADD COLUMN kind TEXT NOT NULL DEFAULT 'TileSpalling'")
+    if 'zone' not in columns:
+        conn.execute("ALTER TABLE findings ADD COLUMN zone TEXT NOT NULL DEFAULT ''")
+
+
 @contextmanager
 def database(write=False):
     ROOT.mkdir(parents=True, exist_ok=True)
@@ -71,6 +82,7 @@ def database(write=False):
         conn.row_factory = sqlite3.Row
         conn.execute('PRAGMA foreign_keys = ON')
         conn.executescript(SCHEMA)
+        migrate(conn)
         if write:
             conn.execute('BEGIN IMMEDIATE')
         yield conn

@@ -24,6 +24,9 @@ export interface Finding {
   id: string
   state: FindingState
   run_id: string | null
+  kind: string
+  zone: string
+  bbox: number[]
   floor: string
   note: string
   evidence_time: number
@@ -96,8 +99,8 @@ export const wallWorkflow = {
   run: (id: string, model: string, sensitivity: number, mode: 'sample' | 'all', iou: number) =>
     api('/tasks/' + id + '/runs', 'POST', { model, sensitivity, mode, iou }),
   cancel: (id: string, run: string) => api('/tasks/' + id + '/runs/' + run + '/cancel', 'POST'),
-  review: (id: string, finding: Finding, state: FindingState, floor: string, note: string) =>
-    api('/tasks/' + id + '/findings/' + finding.id, 'PATCH', { state, floor, note }),
+  review: (id: string, finding: Finding, state: FindingState, floor: string, note: string, kind?: string) =>
+    api('/tasks/' + id + '/findings/' + finding.id, 'PATCH', { state, floor, note, kind }),
   merge: (id: string, into: string, ids: string[]) =>
     api('/tasks/' + id + '/findings/merge', 'POST', { into, ids }),
   draft: (id: string, finding_ids: string[]) => api<Order>('/tasks/' + id + '/orders', 'POST', { finding_ids }),

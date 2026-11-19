@@ -10,6 +10,7 @@ const emit = defineEmits<{
 }>()
 
 const labels = { draft: '草稿', assigned: '待接单', in_progress: '维修中', review: '待验收', completed: '已完成', cancelled: '已取消' }
+const kindLabels: Record<string, string> = { Crack: '裂缝', Seepage: '渗水', TileSpalling: '面砖脱落' }
 const assignee = ref('')
 const due = ref('')
 const priority = ref<'normal' | 'urgent'>('normal')
@@ -49,10 +50,11 @@ function selectPhoto(kind: 'before' | 'after', event: Event) {
       <span class="text-sm text-teal-800">{{ labels[order.state] }}</span>
     </header>
     <p class="mt-1 text-sm text-slate-500">编号 {{ order.id.slice(0, 8) }} · {{ order.finding_ids.length }} 处缺陷</p>
+    <p class="mt-2 text-xs text-slate-500">缺陷位置按画面方位标注（上部/中部/下部 × 左侧/中央/右侧），请结合楼层与现场构件定位复核。</p>
     <ul class="mt-3 space-y-1 text-sm">
       <li v-for="item in findings.filter(finding => order.finding_ids.includes(finding.id))" :key="item.id">
         <button class="text-teal-800 underline" @click="emit('seek', item.evidence_time)">
-          {{ item.floor || '楼层待核实' }} · 查看 {{ item.evidence_time.toFixed(1) }} 秒处的画面
+          {{ kindLabels[item.kind] || '缺陷' }} · {{ item.zone || '方位待核实' }} · {{ item.floor || '楼层待核实' }} · 查看 {{ item.evidence_time.toFixed(1) }} 秒处画面
         </button>
         <span v-if="item.note"> · {{ item.note }}</span>
       </li>

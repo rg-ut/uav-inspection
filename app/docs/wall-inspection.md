@@ -4,9 +4,9 @@
 
 ## 模型
 
-工作台支持 640×640、单类别、未导出 NMS 的 YOLO 检测 ONNX，输出布局为 [1, 5, N]。单类别应代表外墙脱落，上传由管理员操作。已有 .pt 权重须来自可信来源，放在部署状态说明指定位置，并安装可选推理依赖。录像任务固定模型文件版本。无模型时，可导入录像、查看飞行数据和现有记录。
+工作台支持 640×640、单类别、未导出 NMS 的 YOLO 检测 ONNX，输出布局为 [1, 5, N]。单类别应代表外墙脱落，所有登录账号均可上传。已有 .pt 权重须来自可信来源，放在部署状态说明指定位置，并安装可选推理依赖。录像任务固定模型文件版本。无模型时，可导入录像、查看飞行数据和现有记录。
 
-UAV_WALL_ADMINS 是以逗号分隔的管理员账号，默认没有外墙管理员。部署时先注册专用账号，再通过 UAV_WALL_ADMINS 指定。UAV_WALL_IMPORT_DIR 指定原有本地路径导入的范围，只有管理员可使用。UAV_WALL_MAX_VIDEO_BYTES 默认 8 GiB。UAV_WALL_FFPROBE、UAV_WALL_FFMPEG 可指定程序路径。
+UAV_WALL_ADMINS 是以逗号分隔的管理员账号，默认没有外墙管理员；现在仅用于 UAV_WALL_IMPORT_DIR 指定的原有本地路径导入，只有管理员可使用该导入方式。UAV_WALL_MAX_VIDEO_BYTES 默认 8 GiB。UAV_WALL_FFPROBE、UAV_WALL_FFMPEG 可指定程序路径。
 
 ## 现场直播
 
