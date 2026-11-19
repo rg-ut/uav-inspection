@@ -65,6 +65,20 @@ const modules = [
         icon: Building2,
         desc: ['裂缝标注', '渗水识别'],
       },
+      {
+        name: '车辆违停巡检',
+        path: '/plate',
+        theme: 'roof',
+        icon: ScanLine,
+        desc: ['车牌识别', '违停判定'],
+      },
+      {
+        name: '车辆覆盖率检测',
+        path: '/vehicle-coverage',
+        theme: 'roof',
+        icon: CarFront,
+        desc: ['车辆表面巡检', '视点覆盖评估'],
+      },
     ],
   },
   {
@@ -136,26 +150,6 @@ const modules = [
     ],
   },
   {
-    title: '无人机巡检',
-    accent: 'bg-cyan-500',
-    items: [
-      {
-        name: '车辆违停巡检',
-        path: '/plate',
-        theme: 'roof',
-        icon: ScanLine,
-        desc: ['车牌识别', '违停判定'],
-      },
-      {
-        name: '车辆覆盖率检测',
-        path: '/vehicle-coverage',
-        theme: 'roof',
-        icon: CarFront,
-        desc: ['车辆表面巡检', '视点覆盖评估'],
-      },
-    ],
-  },
-  {
     title: '演示素材管理',
     accent: 'bg-slate-600',
     items: [
@@ -214,7 +208,7 @@ const handleNavigation = async (path: string) => {
             <h2 class="text-xl font-bold text-slate-800 sm:text-2xl">{{ group.title }}</h2>
           </div>
 
-          <div class="flex flex-col gap-3 sm:gap-5">
+          <div class="flex flex-col gap-3 sm:gap-5" :class="group.items.length > 4 ? 'max-h-[484px] sm:max-h-[636px] overflow-y-auto pr-1' : ''">
             <button
               v-for="item in group.items"
               :key="item.name"
