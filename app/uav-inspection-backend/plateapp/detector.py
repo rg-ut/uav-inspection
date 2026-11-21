@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import base64
+import os
 import time
 from typing import Any
 
@@ -264,12 +265,75 @@ class PlateDetector:
         label = detection['text'] or detection['color_cn']
         caption = f'{label} {detection["conf"]:.2f}'
         x1, y1 = int(detection['bbox'][0]), int(detection['bbox'][1])
-        font = cv2.FONT_HERSHEY_SIMPLEX
-        text_size, _ = cv2.getTextSize(caption, font, 0.6, 2)
-        text_w, text_h = text_size
-        top = max(0, y1 - text_h - 10)
-        cv2.rectangle(image, (x1, top), (x1 + text_w + 8, y1), color, -1)
-        cv2.putText(image, caption, (x1 + 4, y1 - 6), font, 0.6, (255, 255, 255), 2, cv2.LINE_AA)
+
+        font = _label_font(18)
+        if font is None:
+            _put_ascii_label(image, caption, x1, y1, color)
+            return
+
+        try:
+            from PIL import Image as _PILImage, ImageDraw
+            canvas = _PILImage.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
+            draw = ImageDraw.Draw(canvas)
+            left, offset_top, right, bottom = draw.textbbox((0, 0), caption, font=font)
+            text_w, text_h = right - left, bottom - offset_top
+            top = max(0, y1 - text_h - 12)
+            draw.rectangle(
+                [x1, top, x1 + text_w + 10, y1],
+                fill=(int(color[2]), int(color[1]), int(color[0])),
+            )
+            draw.text(
+                (x1 + 5 - left, top + 5 - offset_top), caption,
+                font=font, fill=(255, 255, 255),
+            )
+            image[:, :, :] = cv2.cvtColor(np.array(canvas), cv2.COLOR_RGB2BGR)
+        except Exception:
+            # PIL 或字体在运行期出问题时不吞掉检测结果，退回 ASCII 绘制
+            _put_ascii_label(image, caption, x1, y1, color)
+
+
+_LABEL_FONT_CACHE: dict[int, Any] = {}
+
+_FONT_CANDIDATES = (
+    'C:/Windows/Fonts/msyh.ttc',
+    'C:/Windows/Fonts/msyhbd.ttc',
+    'C:/Windows/Fonts/simhei.ttf',
+    'C:/Windows/Fonts/simsun.ttc',
+    '/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc',
+    '/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc',
+    '/usr/share/fonts/truetype/arphic/uming.ttc',
+    '/System/Library/Fonts/PingFang.ttc',
+)
+
+
+def _label_font(size: int):
+    """返回可按中文绘制的字体；系统里没有中文字体时返回 None。"""
+    if size in _LABEL_FONT_CACHE:
+        return _LABEL_FONT_CACHE[size]
+    font = None
+    try:
+        from PIL import ImageFont
+        for path in _FONT_CANDIDATES:
+            if not os.path.isfile(path):
+                continue
+            try:
+                font = ImageFont.truetype(path, size)
+                break
+            except Exception:
+                continue
+    except Exception:
+        font = None
+    _LABEL_FONT_CACHE[size] = font
+    return font
+
+
+def _put_ascii_label(image: np.ndarray, caption: str, x1: int, y1: int, color) -> None:
+    """改动前的绘制方式：OpenCV 自带字体只有 ASCII，汉字会落成 ?。"""
+    cv_font = cv2.FONT_HERSHEY_SIMPLEX
+    (text_w, text_h), _ = cv2.getTextSize(caption, cv_font, 0.6, 2)
+    top = max(0, y1 - text_h - 10)
+    cv2.rectangle(image, (x1, top), (x1 + text_w + 8, y1), color, -1)
+    cv2.putText(image, caption, (x1 + 4, y1 - 6), cv_font, 0.6, (255, 255, 255), 2, cv2.LINE_AA)
 
 
 plate_detector = PlateDetector()

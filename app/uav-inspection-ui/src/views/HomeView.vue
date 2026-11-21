@@ -66,7 +66,7 @@ const modules = [
         desc: ['裂缝标注', '渗水识别'],
       },
       {
-        name: '车辆违停巡检',
+        name: '无人机车牌巡检',
         path: '/plate',
         theme: 'roof',
         icon: ScanLine,

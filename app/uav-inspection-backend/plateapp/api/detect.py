@@ -13,11 +13,22 @@ from pydantic import BaseModel
 
 from plateapp.detector import plate_detector
 from plateapp.recognizer import plate_recognizer
+from deployment_paths import backend_path
 from uav_url_prefix import prefixed
 
 router = APIRouter()
 
-DATA_DIR = Path(__file__).resolve().parent.parent / 'data'
+# 数据落点遵循平台约定：<数据根>/uav-inspection-backend/<domain>data/。
+# 早期版本把 data 放在包目录里，会跟着 source 一起打进镜像层，容器重建（--force-recreate）
+# 后运行期写入的 timeline/coverage 全丢，且与 deployment_readiness 的判定口径打架。
+_PACKAGED_DATA_DIR = Path(__file__).resolve().parent.parent / 'data'
+_RUNTIME_DATA_DIR = backend_path('platedata')
+# Choose one batch directory so replay metadata, cards and media use the same source.
+DATA_DIR = (
+    _RUNTIME_DATA_DIR
+    if any((_RUNTIME_DATA_DIR / name).is_file() for name in ('acceptance.json', 'timeline.json', 'coverage.json'))
+    else _PACKAGED_DATA_DIR
+)
 ACCEPTANCE_PATH = DATA_DIR / 'acceptance.json'
 CARDS_DIR = DATA_DIR / 'cards'
 
@@ -25,7 +36,40 @@ CARDS_DIR = DATA_DIR / 'cards'
 # 媒体（回放视频、阶段封面、热力图）走 /api/v1/plate/media 静态挂载。
 TIMELINE_PATH = DATA_DIR / 'timeline.json'
 COVERAGE_PATH = DATA_DIR / 'coverage.json'
+# 2026-11-20：四宫格第四格由「全局建图」改成俯视路径图，
+# 数据从 mission_r1.log 与 stage2_r*.log 的 GOTO 序列重建，见 platedata/path.json 的 source 字段。
+# 同一天把它挪进 media/ 下（原 platedata/path.json）：这是给前端读的静态数据，放 media 里
+# 走既有的 /plate/media 静态挂载就能取到。这样即便后端进程是旧代码（没有 /plate/path 路由，
+# 用户双击「打开车牌巡检.bat」常驻的 8002 就是这种情况，uvicorn 没开 --reload 不会热更），
+# 前端 404 后回退到 /plate/media/path.json 仍能出图，不必为了一个路由重启服务。
 MEDIA_DIR = DATA_DIR / 'media'
+PATH_PATH = MEDIA_DIR / 'path.json'
+
+
+def _versioned(url: str, base_dir: Path) -> str:
+    """给静态资源 URL 追加内容戳，防止换批次后客户端继续用旧文件。
+
+    静态挂载不带 Cache-Control，浏览器对同 URL 的 mp4/jpg 会强缓存。实测把 p9 的回放
+    换成 p10 后，页面仍显示旧的 21:44（1304 s）而不是新的 20:12（1212 s），
+    普通刷新和 F5 都无效，必须硬清缓存。加上 ?v=<mtime> 后 URL 变了，自然重新拉取。
+    结果卡（cards/*.jpg）是同一文件名换内容，不吃这套就会一直显示旧卡，故一并走这里。
+    幂等：URL 已带查询串时替换掉，不叠加——`x.mp4?v=1?v=2` 会让服务端把
+    `x.mp4?v=1` 当文件名，直接 404。
+    """
+    base, _sep, _query = url.partition('?')
+    name = base.rsplit('/', 1)[-1]
+    try:
+        return '%s?v=%d' % (base, int((base_dir / name).stat().st_mtime))
+    except OSError:
+        return url
+
+
+def _media_versioned(url: str) -> str:
+    return _versioned(url, MEDIA_DIR)
+
+
+def _cards_versioned(url: str) -> str:
+    return _versioned(url, CARDS_DIR)
 
 # 视频检测是同步执行的，必须有明确上限，否则一个大文件就能把工作进程占满。
 MAX_VIDEO_FRAMES = 40
@@ -245,20 +289,24 @@ async def plate_detect_video(
         temp_path.unlink(missing_ok=True)
 
 
-@router.get('/acceptance')
-async def plate_acceptance() -> dict[str, object]:
+# response_model=None：返回值可能是 dict 也可能是 JSONResponse（缺数据显示 404），
+# 不关掉自动响应模型的话 FastAPI 会在导入期就报「Invalid args for response field」。
+@router.get('/acceptance', response_model=None)
+async def plate_acceptance() -> dict[str, object] | JSONResponse:
     """离线验收结果回放：没有模型权重时，页面仍有可展示的真实数据。"""
     payload = _load_acceptance()
     if payload is None:
-        return {'code': 404, 'message': '未找到验收回放数据', 'data': {'available': False}}
+        # 缺数据既要让页面看得懂（体内 code），也要让网关/监控判得对（HTTP 404）。
+        return JSONResponse(status_code=404, content={
+            'code': 404, 'message': '未找到验收回放数据', 'data': {'available': False}})
     for vehicle in payload.get('vehicles', []):
         card = vehicle.get('card')
-        vehicle['card_url'] = prefixed(f'/api/v1/plate/cards/{card}') if card else None
+        vehicle['card_url'] = _cards_versioned(prefixed(f'/api/v1/plate/cards/{card}')) if card else None
     return {'code': 200, 'message': 'success', 'data': payload}
 
 
-@router.get('/replay')
-async def plate_replay() -> dict[str, object]:
+@router.get('/replay', response_model=None)
+async def plate_replay() -> dict[str, object] | JSONResponse:
     """任务过程回放：阶段时间轴 + 回放视频地址 + 关键事件。
 
     数据由 ai/analysis/v4e_timeline_20261115.py 从 driver.log 与 fsm.json 解析，
@@ -266,24 +314,39 @@ async def plate_replay() -> dict[str, object]:
     """
     payload = _load_json_file(TIMELINE_PATH)
     if payload is None:
-        return {'code': 404, 'message': '未找到回放数据',
-                'data': {'available': False}}
+        return JSONResponse(status_code=404, content={
+            'code': 404, 'message': '未找到回放数据', 'data': {'available': False}})
 
     video = payload.get('video') or {}
     for key in ('src', 'poster'):
         if video.get(key):
-            video[key] = prefixed(str(video[key]))
+            video[key] = _media_versioned(prefixed(str(video[key])))
     payload['video'] = video
 
     for phase in payload.get('phases') or []:
         if phase.get('cover'):
-            phase['cover'] = prefixed(str(phase['cover']))
+            phase['cover'] = _media_versioned(prefixed(str(phase['cover'])))
 
     return {'code': 200, 'message': 'success', 'data': payload}
 
 
-@router.get('/coverage')
-async def plate_coverage() -> dict[str, object]:
+@router.get('/path', response_model=None)
+async def plate_path() -> dict[str, object] | JSONResponse:
+    """逐腿路径与视点：从任务日志的 GOTO 序列重建，供四宫格第四格画俯视路径图。
+
+    来源：~/runs/mission_20261116_120348 的 stage2_r1.log / stage2_r2.log / inspect_r*.yaml。
+    计算口径：front/* 视点按车轴方位前推 d 米复算平面位置；transit/* 平面取车坐标
+    （实际在车正上方，图上不体现高度）；FLEET 取场地中心。高度一律不画。
+    """
+    payload = _load_json_file(PATH_PATH)
+    if payload is None:
+        return JSONResponse(status_code=404, content={
+            'code': 404, 'message': '未找到路径数据', 'data': {'available': False}})
+    return {'code': 200, 'message': 'success', 'data': payload}
+
+
+@router.get('/coverage', response_model=None)
+async def plate_coverage() -> dict[str, object] | JSONResponse:
     """L4 覆盖质量：可观测区格数、各帧数门限占比、分排统计、15 车位质量。
 
     分母口径：贴墙矩形（x±13.7 / y±9.2）再扣掉 7 辆车体遮挡区。
@@ -291,9 +354,15 @@ async def plate_coverage() -> dict[str, object]:
     """
     payload = _load_json_file(COVERAGE_PATH)
     if payload is None:
-        return {'code': 404, 'message': '未找到覆盖质量数据',
-                'data': {'available': False}}
+        return JSONResponse(status_code=404, content={
+            'code': 404, 'message': '未找到覆盖质量数据', 'data': {'available': False}})
 
     if payload.get('image'):
-        payload['image'] = prefixed(str(payload['image']))
+        payload['image'] = _media_versioned(prefixed(str(payload['image'])))
+    # RViz 全流程录屏（2026-11-16 加）：同样要带内容戳，否则换批后浏览器放旧片
+    rviz = payload.get('rviz')
+    if isinstance(rviz, dict):
+        for key in ('src', 'poster'):
+            if rviz.get(key):
+                rviz[key] = _media_versioned(prefixed(str(rviz[key])))
     return {'code': 200, 'message': 'success', 'data': payload}

@@ -1,92 +1,14 @@
-import { http, request } from '../utils/request'
-
-export interface PlateDetection {
-  class: number
-  name: string
-  color: string
-  color_cn: string
-  bbox: [number, number, number, number]
-  quad: [number, number][]
-  conf: number
-  text: string | null
-  text_score: number | null
-}
-
-export interface RecognizerStatus {
-  available: boolean
-  backend: string | null
-  model: string | null
-  mode: string
-  charset_size: number
-  note: string
-}
-
-export interface PlateDetectResult {
-  detections: PlateDetection[]
-  count: number
-  stats: Record<string, number>
-  plates: string[]
-  recognizer: RecognizerStatus
-  annotated_image: string
-  image_size: [number, number]
-  inference_ms: number
-}
-
-export interface PlateInfoResult {
-  system: {
-    cuda_available: boolean
-    device: string
-  }
-  model: {
-    name: string
-    classes: string[]
-    task: string
-  }
-  recognizer: RecognizerStatus
-  config: {
-    confidence: number
-    iou: number
-    max_plates: number
-  }
-  capabilities: {
-    single_frame_detection: boolean
-    oriented_boxes: boolean
-    plate_text: boolean
-  }
-}
-
-export interface PlateVideoHit {
-  text: string
-  count: number
-  best_conf: number
-  color: string
-  color_cn: string
-  first_seen_s: number
-}
-
-export interface PlateVideoResult {
-  fps: number
-  total_frames: number
-  sampled_frames: number
-  hits: number
-  truncated: boolean
-  plates: PlateVideoHit[]
-  unique_count: number
-  color_stats: Record<string, number>
-  frames: Array<{
-    frame: number
-    second: number
-    plates: Array<{ bbox: number[]; conf: number; text: string | null; color: string }>
-  }>
-  best_frame: { frame: number; second: number; image: string; plates: unknown[] } | null
-  recognizer: RecognizerStatus
-  limits: { max_sampled_frames: number; max_seconds: number; sample_step: number }
-}
+import { request } from '../utils/request'
 
 export interface AcceptanceVehicle {
   car: string
   real_car: string
   plate: string
+  /** spawn 真值表里的车牌，与 plate 逐字比对后才算「认定」 */
+  plate_truth?: string
+  match?: boolean
+  /** 真值表里的停放形态：normal / encroach / angled */
+  state?: string
   confidence: number
   distance_m: number
   leg: string
@@ -115,11 +37,15 @@ export interface AcceptanceData {
     fsm: string
     exit_code: number
     batch_dir: string
+    mission_id?: string
+    wall_clock_s?: number | null
   }
   summary: Array<{ label: string; value: string; note: string }>
   vehicles: AcceptanceVehicle[]
   violations: AcceptanceViolation[]
-  reruns: Array<{ 启动: string; 墙钟_s: number; 建图: number }>
+  /** 违停余量来自哪一轮复算（本轮只做检测/识别/覆盖时不重算几何） */
+  geometry?: { batch: string; start: string; note: string }
+  reruns?: Array<{ 启动: string; 墙钟_s: number; 建图: number }>
   retry: { 轮次: number; 触发: string; 补拍: string; 结果: string }
 }
 
@@ -138,6 +64,37 @@ export interface ReplayEvent {
   t: number
   kind: string
   text: string
+}
+
+/** 逐腿路径与视点：由任务日志的 GOTO 序列重建，供四宫格第四格画俯视路径图 */
+export interface PlatePathStep {
+  i: number
+  t: number
+  car: string
+  leg: string
+  d: number
+  x: number
+  y: number
+  yaw: number
+  kind: 'overview' | 'capture' | 'transit'
+  /** 仅 front/retry 腿有：VP 决定补拍时打的原因（如「1 条腿全部格式不合法」） */
+  why?: string
+}
+
+export interface PlatePathCar {
+  name: string
+  x: number
+  y: number
+  yaw: number
+  plate: string
+}
+
+export interface PlatePathData {
+  source: string
+  note: string
+  area: { x0: number; x1: number; y0: number; y1: number }
+  cars: PlatePathCar[]
+  steps: PlatePathStep[]
 }
 
 export interface ReplayData {
@@ -219,6 +176,21 @@ export interface CoverageData {
     min_dist: number
   }>
   image: string
+  /** RViz 全流程录屏：点云 + 占据栅格的深度融合过程（2026-11-16 加） */
+  rviz?: {
+    src: string
+    poster?: string
+    seconds: number
+    width: number
+    height: number
+    fps: number
+    run: string
+    note: string
+    /** 录屏起点相对任务起跑的秒数；>0 表示前段（通常是 SURVEY）不在画面内 */
+    offset_s?: number
+    /** 与覆盖质量同批次时为 true；不同批次前端要显式提示 */
+    same_batch: boolean
+  }
 }
 
 export const plateApi = {
@@ -231,43 +203,6 @@ export const plateApi = {
       acceptance_available: boolean
     }>({ url: '/plate/health', method: 'GET' })
   },
-  getInfo() {
-    return request<PlateInfoResult>({ url: '/plate/info', method: 'GET' })
-  },
-  getConfig() {
-    return request<{ confidence: number; iou: number; max_plates: number }>({
-      url: '/plate/config',
-      method: 'GET',
-    })
-  },
-  updateConfig(payload: { confidence?: number; iou?: number; max_plates?: number }) {
-    return request<{ confidence: number; iou: number; max_plates: number }>({
-      url: '/plate/config',
-      method: 'POST',
-      data: payload,
-    })
-  },
-  detectUpload(file: File, conf?: number, recognize = true) {
-    const form = new FormData()
-    form.append('image', file)
-    const query = new URLSearchParams()
-    if (conf !== undefined) query.set('conf', String(conf))
-    query.set('recognize', String(recognize))
-    return http.postForm<PlateDetectResult>(`/plate/detect/upload?${query.toString()}`, form, {
-      timeout: 30000,
-    })
-  },
-  detectVideo(file: File, options: { sampleStep?: number; conf?: number; recognize?: boolean } = {}) {
-    const form = new FormData()
-    form.append('video', file)
-    const query = new URLSearchParams()
-    query.set('sample_step', String(options.sampleStep ?? 15))
-    if (options.conf !== undefined) query.set('conf', String(options.conf))
-    query.set('recognize', String(options.recognize ?? true))
-    return http.postForm<PlateVideoResult>(`/plate/detect/video?${query.toString()}`, form, {
-      timeout: 120000,
-    })
-  },
   getAcceptance() {
     return request<AcceptanceData>({ url: '/plate/acceptance', method: 'GET' })
   },
@@ -276,5 +211,23 @@ export const plateApi = {
   },
   getCoverage() {
     return request<CoverageData>({ url: '/plate/coverage', method: 'GET' })
+  },
+  /**
+   * 俯视路径图数据。
+   *
+   * 先走 /plate/path；拿不到就回退 /plate/media/path.json（同一份文件，走静态挂载）。
+   * 为什么要回退：后端 uvicorn 没开 --reload，用户双击「打开车牌巡检.bat」常驻的那个
+   * 8002 进程还是旧代码，没有这条路由，直接 404 会让第四格变成「没有路径数据」。
+   * 数据文件本身就挂在 media 下，回退这条路在新旧两代后端都通。
+   */
+  async getPath() {
+    try {
+      return await request<PlatePathData>({ url: '/plate/path', method: 'GET' })
+    } catch {
+      // 静态文件是裸 JSON（顶层就是 source/note/area/cars/steps，没有 {code,message,data}
+      // 外壳），这里就地补一个外壳，调用方仍按 result.data 取，不必为兜底单开分支。
+      const raw = await request<PlatePathData>({ url: '/plate/media/path.json', method: 'GET' })
+      return { code: 200, message: 'ok', data: raw as unknown as PlatePathData }
+    }
   },
 }
