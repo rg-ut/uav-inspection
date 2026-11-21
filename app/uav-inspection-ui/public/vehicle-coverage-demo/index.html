@@ -5,11 +5,11 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="description" content="无人机视点优化仿真回放、覆盖评估与选点耗时诊断">
   <title>无人机视点优化平台</title>
-  <link rel="stylesheet" href="style.css">
-  <script defer src="assets/recorded-run.js"></script>
-  <script defer src="assets/rviz-cloud-data.js"></script>
-  <script defer src="rviz-cloud.js"></script>
-  <script defer src="app.js"></script>
+  <link rel="stylesheet" href="style.css?v=analysis-overlay-20261121">
+  <script defer src="assets/recorded-run.js?v=analysis-overlay-20261121"></script>
+  <script defer src="assets/rviz-cloud-data.js?v=analysis-overlay-20261121"></script>
+  <script defer src="rviz-cloud.js?v=analysis-overlay-20261121"></script>
+  <script defer src="app.js?v=analysis-overlay-20261121"></script>
 </head>
 <body>
   <header class="topbar">
@@ -34,21 +34,12 @@
         <div class="current-task"><span>当前任务</span><strong>SUV 视点优化仿真</strong></div>
         <span class="module-mode">仿真回放</span>
         <nav class="module-tabs" aria-label="车辆覆盖率检测">
-          <button class="tab playback-settings" id="settings-open" type="button">播放设置</button>
-          <a class="tab" href="#workbench">播放示例</a>
-          <a class="tab" href="#comparison">覆盖分析</a>
-          <a class="tab" href="#diagnostics">耗时诊断</a>
-          <a class="tab download-tab" href="assets/suv-recorded.mp4" download>下载视频</a>
+          <a class="tab" href="#comparison">覆盖率与耗时分析</a>
+          
+          <a class="tab download-tab" href="assets/suv-flight-planning.mp4" download>下载视频</a>
         </nav>
       </div>
-      <dialog class="settings-dialog panel" id="playback-settings">
-        <form method="dialog">
-          <div class="panel-head"><h2>播放设置</h2><button class="tab" value="close">关闭</button></div>
-          <label for="playback-rate">播放速度 <output id="playback-rate-value">1.0×</output></label>
-          <input id="playback-rate" type="range" min="0.5" max="2" step="0.1" value="1">
-        </form>
-      </dialog>
-      <section class="module-view" id="workbench" aria-label="巡检演示">
+<section class="module-view" id="workbench" aria-label="巡检演示">
       <div class="replay-switch mobile-switch" id="mobile-switch" role="group" aria-label="工作台分区">
         <button class="tab" type="button" data-view="media" aria-pressed="true">巡检画面</button>
         <button class="tab" type="button" data-view="status" aria-pressed="false">状态与点云</button>
@@ -81,15 +72,15 @@
           <div class="replay-controls">
             <button id="replay-play" type="button" class="tab" title="播放视频" aria-label="播放视频">▶</button>
             <button id="replay-restart" type="button" class="tab" title="重新播放" aria-label="重新播放">↺</button>
-            <span id="replay-time">0:00 / 0:45</span>
-            <input id="replay-position" type="range" min="0" max="45" step="0.01" value="0" aria-label="视频进度">
+            <span id="replay-time">0:00 / 1:00</span>
+            <input id="replay-position" type="range" min="0" max="60" step="0.01" value="0" aria-label="视频进度"><select id="playback-rate" class="video-rate" aria-label="播放倍速"><option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="1.5">1.5×</option><option value="2">2×</option><option value="4">4×</option></select>
           </div>
           <p class="replay-error" id="replay-error" role="status"></p>
         </article>
         <article class="panel tracking-panel">
-          <div class="panel-head status-head"><h2>任务概览</h2><p id="replay-phase">等待覆盖回放</p></div>
+          <div class="panel-head status-head"><h2>任务概览</h2><p id="replay-phase" hidden>等待覆盖回放</p></div>
           <div class="tracking-metrics">
-            <div><span>累计覆盖率</span><strong id="replay-coverage">—</strong><p id="replay-count"></p></div>
+            <div><span>累计覆盖率</span><strong id="replay-coverage">—</strong><p id="replay-count" hidden></p></div>
             <div><span>有效观测</span><strong id="replay-observations">—</strong></div>
             <div><span>当前视点 ID</span><strong id="replay-viewpoint">—</strong></div>
             <div><span>本次新增覆盖</span><strong id="replay-gain">—</strong></div>
@@ -125,7 +116,7 @@
         </aside>
       </div>
     </section>
-    <section class="module-view" id="comparison" aria-label="覆盖分析" hidden>
+    <dialog class="analysis-overlay" id="comparison" aria-labelledby="analysis-title"><header class="analysis-header"><h2 id="analysis-title">覆盖率与耗时分析</h2><button id="analysis-close" type="button" aria-label="关闭分析"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></button></header>
         <aside class="panel run-summary">
           <div class="panel-head"><div><h2>本轮记录</h2><p>2026 年 11 月 16 日 · SUV 场景</p></div><span class="chip">Gazebo SITL</span></div>
           <div class="overview">
@@ -149,20 +140,24 @@
         </div>
         <div class="table-scroll"><table><thead><tr><th scope="col">观测</th><th scope="col">视点 ID</th><th scope="col">新增点</th><th scope="col">累计点</th><th scope="col">累计覆盖率</th><th scope="col">回放</th></tr></thead><tbody id="trend-table"></tbody></table></div>
       </article>
-    </section>
-    <section class="module-view" id="diagnostics" aria-label="耗时诊断" hidden>
+    <section id="diagnostics" aria-label="耗时诊断">
       <div class="workspace">
         <article class="panel data-panel">
           <div class="panel-head"><div><h2>本次回放分段耗时</h2><p>根据同一轮仿真的原始日志计时 · 单位为秒</p></div><span id="round-total" class="chip" hidden></span></div>
-          <div id="rounds" class="tabs" aria-label="选点轮次"></div>
-          <div id="time-bars" class="bars" aria-live="polite"></div>
+          <canvas id="timing-trend" aria-label="各视点耗时折线图"></canvas><div class="timing-legend" aria-label="耗时图例"><span><i class="swatch total"></i>总耗时</span><span><i class="swatch selection"></i>选点</span><span><i class="swatch capture"></i>飞行拍摄</span></div><div hidden id="rounds" class="tabs" aria-label="选点轮次"></div>
+          <div hidden id="time-bars" class="bars" aria-live="polite"></div>
           <p class="muted" id="diagnostics-empty" hidden>这轮回放暂无分段耗时记录。</p>
         </article>
-        <aside class="panel result-panel"><div class="panel-head"><div><h2>覆盖任务总耗时</h2><p>仿真原始运行时间</p></div></div><div class="big-gain" id="diagnostics-elapsed"></div><p class="muted" id="diagnostics-result"></p></aside>
+        <aside class="panel result-panel"><div class="panel-head"><div><h2>覆盖任务总耗时</h2><p>仿真原始运行时间</p></div></div><div class="big-gain" id="diagnostics-elapsed"></div><p class="muted" id="diagnostics-result"></p><dl class="timing-facts"><div><dt>有效视点</dt><dd id="timing-views">—</dd></div><div><dt>单轮平均耗时</dt><dd id="timing-average">—</dd></div><div><dt>单轮最长耗时</dt><dd id="timing-longest">—</dd></div></dl></aside>
       </div>
     </section>
+    </dialog>
+
     </section>
     <footer><span>无人机视点优化 · 研究工作台</span><span>仿真回放与历史实验记录</span></footer>
   </main>
 </body>
 </html>
+
+
+

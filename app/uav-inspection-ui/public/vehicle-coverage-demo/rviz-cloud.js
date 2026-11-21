@@ -27,6 +27,7 @@ function createRvizCloud({ points, firstSeen, planned, viewpointIds }, recordedR
   const pointers = new Map();
   let showRoute = photoPositions.length > 0;
   let observation = 0;
+  let routeTime = 0;
   let yaw = -0.78;
   let pitch = 0.43;
   let zoom = 1;
@@ -88,17 +89,20 @@ function createRvizCloud({ points, firstSeen, planned, viewpointIds }, recordedR
     if (showRoute && observation > 0) {
       const photos = photoPositions.slice(0, observation).map(project);
       const goals = plannedPositions.slice(0, observation).map(project);
+      const next=photoPositions[observation], start=recordedRun.times[observation-1], end=recordedRun.times[observation];
+      if(next && end>start){const t=Math.max(0,Math.min(1,(routeTime-start)/(end-start))); const prev=photoPositions[observation-1]; photos.partial=project(prev.map((v,i)=>v+(next[i]-v)*t));}
       drawRoute(photos, goals, width, height);
     }
   }
 
   function drawRoute(photos, goals, width, height) {
     const routeColor = "#d260ff";
-    if (photos.length > 1) {
+    if (photos.length > 1 || photos.partial) {
       context.beginPath();
       const [[startX, startY], ...remaining] = photos;
       context.moveTo(startX, startY);
       for (const [x, y] of remaining) context.lineTo(x, y);
+      if(photos.partial) context.lineTo(...photos.partial.slice(0,2));
       context.strokeStyle = routeColor;
       context.lineWidth = 2;
       context.stroke();
@@ -222,8 +226,9 @@ function createRvizCloud({ points, firstSeen, planned, viewpointIds }, recordedR
   canvas.hidden = false;
   updateRouteVisibility();
   new ResizeObserver(draw).observe(canvas);
-  return step => {
+  return (step,time=recordedRun.times[step-1] ?? 0) => {
     observation = step;
+    routeTime = time;
     draw();
   };
 }

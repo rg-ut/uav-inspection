@@ -269,3 +269,81 @@ body:not(.continuous-camera) .rviz-panel img { object-view-box: inset(10.17% 1.6
   .metric { padding: 12px; }
   .metric p { font-size: 11px; }
 }
+/* Resizable replay views */
+.tracking-metrics { grid-template-columns:repeat(2,minmax(0,1fr)); align-items:stretch; }
+.tracking-metrics > div { min-width:0; min-height:78px; display:flex; flex-direction:column; justify-content:center; box-sizing:border-box; }
+.tracking-metrics strong { font-size:clamp(18px,1.6vw,26px); white-space:nowrap; }
+#replay-phase[hidden], #replay-count[hidden] { display:none; }
+#cloud-view { resize:both; overflow:auto; width:100%; height:360px; min-width:220px; min-height:240px; max-width:100%; flex:none; box-sizing:border-box; }
+#cloud-view #rviz-cloud { height:calc(100% - 76px); flex:none; aspect-ratio:auto; min-height:150px; }
+#replay .tracking-panel { overflow:auto; max-height:100%; }
+#flight-frame { object-fit:cover; }
+.camera-inset { resize:both; overflow:hidden; min-width:110px; min-height:110px; height:180px; box-sizing:border-box; display:flex; flex-direction:column; border-radius:6px; }
+.camera-inset figcaption { cursor:move; touch-action:none; flex:none; user-select:none; padding:4px; }
+.camera-inset canvas { flex:1; min-height:0; height:0; object-fit:cover; }
+#timing-trend { width:100%; height:280px; display:block; }
+#diagnostics { margin-top:16px; }
+#diagnostics .workspace { grid-template-columns:minmax(0,3fr) minmax(180px,1fr); }
+@media(max-width:700px) { #diagnostics .workspace { grid-template-columns:1fr; } }
+.media-viewport #flight-frame { object-fit:cover; position:absolute; inset:0; width:100%; height:100%; }
+#cloud-view { display:grid; grid-template-rows:minmax(100px,1fr) auto auto; min-width:140px; overflow:hidden; }
+#cloud-view #rviz-cloud { height:100%; min-height:0; }
+#cloud-view .cloud-controls, #cloud-view .cloud-legend { margin:4px 0; }
+.tracking-metrics { grid-auto-rows:78px; }
+@media(min-width:1101px) { #replay { grid-template-columns:minmax(290px,310px) minmax(0,1fr) minmax(280px,320px); } }
+.tracking-metrics > div { align-items:flex-start; text-align:left; padding:10px; }
+.tracking-metrics strong { font-size:clamp(18px,1.5vw,24px); max-width:100%; }
+.tracking-metrics span { white-space:nowrap; }
+.timing-legend { display:flex; flex-wrap:wrap; gap:10px 22px; margin:12px 0 0; font-size:13px; color:#475569; }
+.timing-legend span { display:inline-flex; align-items:center; gap:7px; }
+.swatch { display:inline-block; width:14px; height:10px; border-radius:3px; }
+.swatch.total { background:#ea580c; } .swatch.selection { background:#0891b2; } .swatch.capture { background:#db2777; }
+#diagnostics .workspace { grid-template-columns:minmax(0,1fr) 280px; align-items:start; }
+#diagnostics .result-panel { padding:20px; }
+#diagnostics .result-panel .panel-head { margin-bottom:12px; }
+#diagnostics .big-gain { margin:0 0 8px; font-size:34px; }
+#diagnostics-result { font-size:13px; margin:0 0 16px; }
+.timing-facts { border-top:1px solid #e2e8f0; margin:0; padding-top:10px; }
+.timing-facts > div { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:9px 0; }
+.timing-facts dt { font-size:13px; color:#64748b; } .timing-facts dd { margin:0; font-weight:600; font-variant-numeric:tabular-nums; }
+@media(max-width:700px) { #diagnostics .workspace { grid-template-columns:1fr; } }
+/* Corner grips stay separate from point-cloud rotation and camera dragging. */
+#cloud-view, .camera-inset { position:relative; resize:none; }
+.media-viewport .camera-inset { position:absolute; }
+.resize-corner { position:absolute; z-index:5; width:18px; height:18px; touch-action:none; user-select:none; border-color:#67b8d3; border-style:solid; }
+.resize-corner.nw { left:0; top:0; border-width:2px 0 0 2px; cursor:nwse-resize; }
+.resize-corner.ne { right:0; top:0; border-width:2px 2px 0 0; cursor:nesw-resize; }
+.resize-corner.sw { left:0; bottom:0; border-width:0 0 2px 2px; cursor:nesw-resize; }
+.resize-corner.se { right:0; bottom:0; border-width:0 2px 2px 0; cursor:nwse-resize; }
+#cloud-view .cloud-controls { display:flex; flex-direction:column; align-items:flex-start; justify-content:flex-start; gap:6px; padding-top:3px; }
+.cloud-controls .cloud-actions { order:0; justify-content:flex-start; }
+.cloud-controls small { order:1; text-align:left; }
+#cloud-view .cloud-legend { justify-content:flex-start; padding-bottom:10px; }
+/* Invisible corner resize targets retain their hit area and cursor. */
+.resize-corner { border-color:transparent; }
+/* Match compact statistics typography used by the inspection modules. */
+.tracking-metrics span { font-size:11px; }
+.tracking-metrics strong { font-size:20px; line-height:1.4; font-weight:600; }
+.tracking-metrics { grid-auto-rows:72px; }
+.tracking-metrics > div { min-height:72px; }
+.video-rate { flex:none; color:#e2e8f0; background:#172338; border:1px solid #475569; border-radius:5px; padding:5px 7px; font:500 12px system-ui; cursor:pointer; }
+#replay-position { min-width:0; }
+.analysis-overlay { position:fixed; inset:0; width:100vw; height:100dvh; max-width:none; max-height:none; margin:0; border:0; padding:0 24px 24px; background:#f3f6fb; color:#0f172a; overflow:auto; box-sizing:border-box; }
+.analysis-overlay::backdrop { background:#0f172a70; }
+.analysis-header { position:sticky; top:0; z-index:10; display:flex; align-items:center; justify-content:space-between; background:#f3f6bf; background:#f3f6fb; padding:18px 0; margin-bottom:8px; border-bottom:1px solid #dce5ef; }
+.analysis-header h2 { font-size:18px; font-weight:600; }
+#analysis-close { display:grid; place-items:center; width:36px; height:36px; border:1px solid #dce5ef; border-radius:8px; background:white; color:#475569; font-size:26px; cursor:pointer; }
+#analysis-close:hover { background:#e2e8f0; }
+#diagnostics .result-panel { min-width:0; overflow:hidden; }
+#diagnostics .big-gain { white-space:normal; overflow-wrap:anywhere; font-size:clamp(22px,2.2vw,30px); line-height:1.3; max-width:100%; font-variant-numeric:tabular-nums; }
+@media(max-width:700px){.analysis-overlay { padding:0 12px 12px; }.analysis-header h2{font-size:16px;} #diagnostics .workspace {grid-template-columns:minmax(0,1fr);} }
+#analysis-close { display:flex; align-items:center; justify-content:center; flex:0 0 36px; width:36px; min-width:36px; max-width:36px; height:36px; min-height:36px; max-height:36px; padding:0; box-sizing:border-box; border-radius:8px; line-height:1; }
+#analysis-close svg { display:block; flex:none; }
+/* Shared left and right alignment guides for the total-time card. */
+#diagnostics .result-panel { text-align:left; }
+#diagnostics .result-panel .panel-head { justify-content:flex-start; }
+#diagnostics .result-panel .panel-head > div { width:100%; }
+#diagnostics .result-panel h2, #diagnostics .result-panel p, #diagnostics .big-gain { text-align:left; }
+#diagnostics .timing-facts > div { display:grid; grid-template-columns:minmax(0,1fr) max-content; align-items:baseline; gap:12px; width:100%; }
+#diagnostics .timing-facts dt { text-align:left; }
+#diagnostics .timing-facts dd { text-align:right; justify-self:end; font-variant-numeric:tabular-nums; }

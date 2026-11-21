@@ -135,11 +135,25 @@ if (timings.length) {
 const views = [...document.querySelectorAll(".module-view")];
 const links = document.querySelectorAll("nav a");
 const video = document.getElementById("replay-video");
+const flightVideo = document.createElement('video');
+flightVideo.src = 'assets/suv-flight-planning.mp4';
+flightVideo.preload = 'auto'; flightVideo.muted = true; flightVideo.playsInline = true;
+flightVideo.hidden = true; document.body.append(flightVideo);
+function syncFlight(force = false) {
+  flightVideo.playbackRate = video.playbackRate;
+  if (flightVideo.readyState && (force || Math.abs(flightVideo.currentTime-video.currentTime) > 0.12)) flightVideo.currentTime = video.currentTime;
+}
+video.addEventListener('play', () => { syncFlight(true); flightVideo.play().catch(()=>{}); });
+video.addEventListener('pause', () => { flightVideo.pause(); syncFlight(true); });
+video.addEventListener('seeked', () => syncFlight(true));
+video.addEventListener('ratechange', () => syncFlight());
+flightVideo.addEventListener('seeked', () => { if (video.paused) updateReplay(); });
+flightVideo.addEventListener('loadeddata', () => { syncFlight(true); updateReplay(); });
 const cameraVideoContext = document.getElementById("camera-video-frame").getContext("2d");
 const cameraInsetContext = document.getElementById("camera-inset-frame").getContext("2d");
-const cameraCrop = [1280, 120, 640, 480];
+const cameraCrop = [0, 0, 640, 480];
 if (recordedRun.cameraVideo) {
-  video.src = "assets/suv-synced.mp4";
+  video.src = "assets/suv-camera-planning.mp4";
   cameraVideoContext.canvas.hidden = false;
   document.body.classList.add("continuous-camera");
 }
@@ -147,7 +161,7 @@ const home = document.getElementById("home");
 const vehicleModule = document.getElementById("vehicle-module");
 
 // Pixel regions in the composed 1280 × 720 recording.
-const flightCrop = [605, 71, 658, 600];
+const flightCrop = [706, 71, 456, 600];
 const flight = document.getElementById("flight-frame");
 const trajectory = document.getElementById("trajectory-frame");
 const flightContext = flight.getContext("2d");
@@ -215,13 +229,17 @@ const captureButtons = captureTimes.map((time, index) => {
   return button;
 });
 
-function drawVideoRegion(ctx, crop) {
+function drawVideoRegion(ctx, crop, source = video) {
+  const box = ctx.canvas.getBoundingClientRect();
+  if (box.width && box.height) { const d = window.devicePixelRatio || 1; const w=Math.round(box.width*d), h=Math.round(box.height*d); if(ctx.canvas.width!==w || ctx.canvas.height!==h){ctx.canvas.width=w;ctx.canvas.height=h;} }
   const { width, height } = ctx.canvas;
-  const scale = Math.min(width / crop[2], height / crop[3]);
+  const scale = Math.max(width / crop[2], height / crop[3]);
   const frameWidth = crop[2] * scale;
   const frameHeight = crop[3] * scale;
   ctx.clearRect(0, 0, width, height);
-  ctx.drawImage(video, ...crop, (width - frameWidth) / 2, (height - frameHeight) / 2, frameWidth, frameHeight);
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
+  ctx.drawImage(source, ...crop, (width - frameWidth) / 2, (height - frameHeight) / 2, frameWidth, frameHeight);
 }
 
 const cameraPositions = recordedRun.cameraPositions;
@@ -244,7 +262,7 @@ function routeProjection(canvas) {
 function drawRoute(canvas, observed) {
   const ctx = canvas.getContext("2d");
   const { width, height, density, scale, routeX, routeY, points: routePoints } = routeProjection(canvas);
-  const plotLeft = 21, plotRight = width - 12, plotTop = 21, plotBottom = height - 24;
+  const plotLeft = 21, plotRight = width - 12, plotTop = 21, plotBottom = height - 44;
   ctx.setTransform(density, 0, 0, density, 0, 0);
   ctx.fillStyle = "#f3faff";
   ctx.fillRect(0, 0, width, height);
@@ -267,7 +285,9 @@ function drawRoute(canvas, observed) {
     ctx.fillStyle = "#526980";
     if (y % 2 === 0) ctx.fillText(y, 12, py);
   }
-  ctx.fillText("X (m)", width - 24, height - 7);
+  ctx.textAlign = "right";
+  ctx.fillText("X (m)", width - 12, height - 7);
+  ctx.textAlign = "center";
   ctx.fillText("Y (m)", 24, 9);
   ctx.beginPath();
   ctx.roundRect(routeX(vehicleX - vehicleLength / 2), routeY(vehicleY + vehicleWidth / 2), vehicleLength * scale, vehicleWidth * scale, 8);
@@ -335,9 +355,11 @@ trajectory.addEventListener("click", event => {
 let shownObservation = -1;
 function updateReplay() {
   const time = video.currentTime;
-  const observations = captureTimes.filter(capturedAt => time >= capturedAt).length;
+  const observations = captureTimes.filter(capturedAt => time + 0.001 >= capturedAt).length;
   if (video.readyState >= 2) {
-    drawVideoRegion(flightContext, flightCrop);
+    syncFlight();
+    if (flightVideo.readyState >= 2) drawVideoRegion(flightContext, [3,0,485,640], flightVideo);
+    else drawVideoRegion(flightContext, flightCrop);
     if (recordedRun.cameraVideo) {
       drawVideoRegion(cameraVideoContext, cameraCrop);
       drawVideoRegion(cameraInsetContext, cameraCrop);
@@ -348,6 +370,7 @@ function updateReplay() {
     showObservation(observations);
     shownObservation = observations;
   }
+  if (updateCloudCoverage) updateCloudCoverage(observations,time);
   position.value = time;
   timeLabel.textContent = durationLabel(time) + " / " + durationLabel(recordedRun.videoDuration);
 }
@@ -416,18 +439,18 @@ document.getElementById("replay-restart").addEventListener("click", () => {
   video.currentTime = 0;
   video.play().catch(() => { replayError.textContent = "无法重新播放。"; });
 });
-document.getElementById("settings-open").addEventListener("click", () => document.getElementById("playback-settings").showModal());
+
 document.getElementById("playback-rate").addEventListener("input", event => {
   video.playbackRate = Number(event.target.value);
-  document.getElementById("playback-rate-value").textContent = video.playbackRate.toFixed(1) + "×";
+
 });
 updateReplay();
 
 function showView() {
-  const hash = location.hash.slice(1);
+  const hash = location.hash === "#diagnostics" ? "comparison" : location.hash.slice(1);
   const observation = Number(/^observation-(\d+)$/.exec(hash)?.[1]);
   const captureTime = captureTimes[observation - 1];
-  const viewId = hash === "replay" || captureTime !== undefined ? "workbench" : views.some(view => view.id === hash) ? hash : "home";
+  const viewId = hash === "replay" || hash === "comparison" || captureTime !== undefined ? "workbench" : views.some(view => view.id === hash) ? hash : "home";
   home.hidden = viewId !== "home";
   vehicleModule.hidden = viewId === "home";
   document.getElementById("module-link").hidden = viewId === "home";
@@ -436,6 +459,11 @@ function showView() {
     if (link.hash === "#" + viewId || (link.id === "module-link" && viewId !== "home")) link.setAttribute("aria-current", "page");
     else link.removeAttribute("aria-current");
   }
+  const analysis = document.getElementById('comparison');
+  if (hash === 'comparison') {
+    video.pause();
+    if (!analysis.open) analysis.showModal();
+  } else if (analysis.open) analysis.close();
   if (viewId !== "workbench") video.pause();
   if (captureTime !== undefined) video.currentTime = captureTime;
   if (hash === "replay" || captureTime !== undefined) document.getElementById("replay").scrollIntoView();
@@ -444,3 +472,89 @@ function showView() {
 
 window.addEventListener("hashchange", showView);
 showView();
+document.getElementById('cloud-reset').addEventListener('click', () => {
+  video.pause(); video.currentTime=0; shownObservation=-1; updateReplay();
+  video.play().catch(()=>{ replayError.textContent='请点击播放继续。'; });
+});
+const inset=document.getElementById('camera-inset'), handle=inset.querySelector('figcaption');
+let drag;
+function constrainInset(){
+  const parent=inset.parentElement;
+  inset.style.maxWidth=parent.clientWidth+'px'; inset.style.maxHeight=parent.clientHeight+'px';
+  if(inset.style.top){inset.style.left=Math.max(0,Math.min(parseFloat(inset.style.left)||0,parent.clientWidth-inset.offsetWidth))+'px'; inset.style.top=Math.max(0,Math.min(parseFloat(inset.style.top)||0,parent.clientHeight-inset.offsetHeight))+'px';}
+}
+handle.addEventListener('pointerdown',e=>{if(e.button!==0)return;e.preventDefault();const b=inset.getBoundingClientRect(),p=inset.parentElement.getBoundingClientRect();drag=[e.clientX,e.clientY,b.left-p.left,b.top-p.top];inset.style.left=drag[2]+'px';inset.style.top=drag[3]+'px';inset.style.bottom='auto';handle.setPointerCapture(e.pointerId);});
+handle.addEventListener('pointermove',e=>{if(!drag)return;inset.style.left=drag[2]+e.clientX-drag[0]+'px';inset.style.top=drag[3]+e.clientY-drag[1]+'px';constrainInset();});
+handle.addEventListener('lostpointercapture',()=>{drag=null;});
+new ResizeObserver(()=>{constrainInset();updateReplay();}).observe(inset.parentElement);
+new ResizeObserver(constrainInset).observe(inset);
+const timingCanvas=document.getElementById('timing-trend');
+new ResizeObserver(()=>{
+ const w=timingCanvas.clientWidth,h=timingCanvas.clientHeight;if(!w||!h||!timings.length)return;
+ const d=window.devicePixelRatio||1;timingCanvas.width=w*d;timingCanvas.height=h*d;
+ const c=timingCanvas.getContext('2d');c.scale(d,d);
+ const series=[{color:'#ea580c',v:timings.map(t=>t.seconds.reduce((a,b)=>a+b,0))},{color:'#0891b2',v:timings.map(t=>t.seconds[0])},{color:'#db2777',v:timings.map(t=>t.seconds[1])}];
+ const max=Math.ceil(Math.max(...series.flatMap(s=>s.v))/40)*40,x=i=>48+(w-72)*i/Math.max(1,timings.length-1),y=v=>h-34-(h-58)*v/max;
+ c.font='12px system-ui';for(let i=0;i<=4;i++){const v=max*i/4;c.strokeStyle='#e2e8f0';c.beginPath();c.moveTo(48,y(v));c.lineTo(w-24,y(v));c.stroke();c.fillStyle='#536680';c.textAlign='right';c.fillText(v+' s',41,y(v)+4);}
+ c.textAlign='center';timings.forEach((t,i)=>c.fillText(i+1,x(i),h-12));
+ for(const s of series){c.strokeStyle=s.color;c.fillStyle=s.color;c.lineWidth=2.5;c.beginPath();s.v.forEach((v,i)=>i?c.lineTo(x(i),y(v)):c.moveTo(x(i),y(v)));c.stroke();s.v.forEach((v,i)=>{c.beginPath();c.arc(x(i),y(v),3.5,0,Math.PI*2);c.fill();});}
+}).observe(timingCanvas);
+
+const roundDurations = timings.map(t => t.seconds.reduce((sum, v) => sum + v, 0));
+if (roundDurations.length) {
+  document.getElementById('timing-average').textContent = (roundDurations.reduce((a,b)=>a+b,0)/roundDurations.length).toFixed(1)+' s';
+  document.getElementById('timing-longest').textContent = Math.max(...roundDurations).toFixed(1)+' s';
+  document.getElementById('timing-views').textContent = captureTimes.length+' 个';
+}
+// Four-corner resizing with the opposite corner held in place.
+function addCornerResize(box, floating) {
+  box.classList.add('corner-resizable');
+  for (const corner of ['nw', 'ne', 'sw', 'se']) {
+    const grip = document.createElement('span');
+    grip.className = 'resize-corner ' + corner;
+    grip.setAttribute('role', 'separator');
+    grip.setAttribute('aria-label', ({nw:'左上', ne:'右上', sw:'左下', se:'右下'})[corner] + '角调整窗口大小');
+    box.append(grip);
+    let origin;
+    grip.addEventListener('pointerdown', event => {
+      if (event.button !== 0) return;
+      event.preventDefault(); event.stopPropagation();
+      const rect = box.getBoundingClientRect(), parent = box.parentElement.getBoundingClientRect();
+      origin = { x:event.clientX, y:event.clientY, width:rect.width, height:rect.height,
+        left:rect.left-parent.left-box.parentElement.clientLeft, top:rect.top-parent.top-box.parentElement.clientTop,
+        shift:parseFloat(box.style.top)||0, margin:parseFloat(box.style.marginLeft)||0 };
+      if (floating) { box.style.left=origin.left+'px'; box.style.top=origin.top+'px'; box.style.bottom='auto'; }
+      grip.setPointerCapture(event.pointerId);
+    });
+    grip.addEventListener('pointermove', event => {
+      if (!origin) return;
+      const west=corner.includes('w'), north=corner.includes('n');
+      const dx=event.clientX-origin.x, dy=event.clientY-origin.y;
+      const parent=box.parentElement;
+      const minWidth=floating?110:140, minHeight=floating?110:240;
+      const availableWidth=west?origin.left+origin.width:parent.clientWidth-origin.left;
+      const availableHeight=floating?(north?origin.top+origin.height:parent.clientHeight-origin.top):Math.max(origin.height,720);
+      const width=Math.max(Math.min(minWidth,availableWidth),Math.min(availableWidth,origin.width+(west?-dx:dx)));
+      const height=Math.max(Math.min(minHeight,availableHeight),Math.min(availableHeight,origin.height+(north?-dy:dy)));
+      box.style.width=width+'px'; box.style.height=height+'px';
+      if(floating){
+        box.style.left=(origin.left+(west?origin.width-width:0))+'px';
+        box.style.top=(origin.top+(north?origin.height-height:0))+'px';
+      } else {
+        box.style.marginLeft=(origin.margin+(west?origin.width-width:0))+'px';
+        box.style.top=(origin.shift+(north?origin.height-height:0))+'px';
+      }
+    });
+    grip.addEventListener('lostpointercapture', () => { origin=null; });
+  }
+}
+addCornerResize(document.getElementById('cloud-view'), false);
+addCornerResize(document.getElementById('camera-inset'), true);
+
+
+
+const analysisDialog = document.getElementById('comparison');
+document.getElementById('analysis-close').addEventListener('click', () => analysisDialog.close());
+analysisDialog.addEventListener('close', () => {
+  if (['#comparison','#diagnostics'].includes(location.hash)) location.hash = 'workbench';
+});
