@@ -127,6 +127,15 @@ class WallWorkflowTests(unittest.TestCase):
         report = self.client.get(task + '/report')
         self.assertEqual(report.status_code, 200, report.text[:300] if report.status_code != 200 else '')
         self.assertTrue(report.content.startswith(b'%PDF-'))
+        # 一键清除：删除全部发现，清理工单关联，工单本身保留。
+        cleared = self.check(self.client.delete(task + '/findings'))
+        self.assertEqual(cleared['deleted'], 2)
+        detail = self.check(self.client.get(task))
+        self.assertEqual(detail['findings'], [])
+        self.assertEqual(detail['counts'], {'pending': 0, 'confirmed': 0, 'assigned': 0, 'completed': 0})
+        self.assertEqual(len(detail['orders']), 1)
+        self.assertEqual(detail['orders'][0]['finding_ids'], [])
+        self.assertEqual(self.check(self.client.delete(task + '/findings'))['deleted'], 0)
         self.client.post('/api/v1/auth/logout')
 
     def test_live_telemetry_and_gateway(self):

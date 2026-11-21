@@ -1,10 +1,9 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
-import { Building2, CircleCheck, ClipboardCheck, FileDown, Film, ListChecks, MapPin, MessageCircle, Plus, Radio, SearchCheck, SlidersHorizontal, Wrench } from 'lucide-vue-next'
+import { ArrowLeft, Building2, CircleCheck, ClipboardCheck, FileDown, Film, ListChecks, MapPin, MessageCircle, Plus, SearchCheck, SlidersHorizontal, Trash2, Wrench, X } from 'lucide-vue-next'
 import { useRoute } from 'vue-router'
 import WallWorkspaceHeader from '../components/wall/WallWorkspaceHeader.vue'
 import '../components/wall/wallWorkspace.css'
-import WallLive from '../components/wall/WallLive.vue'
 import WallLocationMap from '../components/wall/WallLocationMap.vue'
 import WallWorkOrder from '../components/wall/WallWorkOrder.vue'
 import { findTelemetry, parseSrt, type TelemetryFrame } from '../utils/srtParser'
@@ -26,7 +25,6 @@ const error = ref('')
 const busy = ref(false)
 const loading = ref(true)
 const showUpload = ref(route.query.upload === '1')
-const showLive = ref(false)
 const name = ref('')
 const building = ref('')
 const facade = ref('')
@@ -44,7 +42,6 @@ const model = ref('')
 const canUploadModel = ref(false)
 const modelUploadHint = ref('')
 const selectedModel = computed(() => models.value.find(item => item.id === model.value))
-const realtime = ref(false)
 const preview = ref<{ boxes: number[][]; width: number; height: number; inference_ms: number } | null>(null)
 const previewError = ref('')
 const previewBusy = ref(false)
@@ -59,8 +56,9 @@ function clearPreview() {
 }
 async function detectPlayback() {
   const player = video.value
-  if (!realtime.value || !manager.value || !player || player.paused || player.seeking ||
-      player.readyState < 2 || previewBusy.value || !model.value) return
+  if (!manager.value || !player || player.paused || player.seeking ||
+      player.readyState < 2 || previewBusy.value || !model.value ||
+      analyzing.value || selectedModel.value?.ready === false) return
   const epoch = previewEpoch
   const id = taskId.value
   const controller = new AbortController()
@@ -76,7 +74,7 @@ async function detectPlayback() {
     context.drawImage(player, 0, 0, canvas.width, canvas.height)
     const image = canvas.toDataURL('image/jpeg', 0.75).split(',')[1] || ''
     const result = await wallWorkflow.detectFrame(id, model.value, image, sensitivity.value, controller.signal)
-    if (!stopped && epoch === previewEpoch && realtime.value) {
+    if (!stopped && epoch === previewEpoch) {
       preview.value = result
       previewError.value = ''
     }
@@ -84,14 +82,13 @@ async function detectPlayback() {
     if (controller.signal.aborted || stopped || epoch !== previewEpoch) return
     // Another preview client can temporarily own the CPU worker; retry on the next tick.
     if ((failure as { response?: { status: number } }).response?.status !== 429) {
-      realtime.value = false
       previewError.value = wallError(failure)
     }
   } finally {
     previewBusy.value = false
   }
 }
-watch(realtime, value => { clearPreview(); if (value) void detectPlayback() })
+// 实时抽帧检测为默认行为：由 @play 事件与 previewTimer 持续驱动，无需开关。
 const sensitivity = ref(0.75)
 watch([model, taskId, sensitivity], () => { clearPreview(); previewError.value = '' })
 const iou = ref(0.45)
@@ -108,6 +105,8 @@ const assistantOpen = ref(false)
 const prompt = ref('')
 const assistantReply = ref('我可以帮你找待复核记录、跳到指定时间，或说明怎样上传字幕。')
 const draftPreview = ref(false)
+const clearConfirm = ref(false)
+const findingView = ref<'list' | 'detail'>('list')
 const reviewPanel = ref<HTMLElement>()
 
 const labels: Record<FindingState, string> = { pending: '待复核', confirmed: '已确认', dismissed: '已排除', merged: '已合并' }
@@ -213,6 +212,7 @@ watch(taskId, async id => {
   orderId.value = ''
   filter.value = 'all'
   tab.value = 'findings'
+  findingView.value = 'list'
   draftPreview.value = false
   if (id) {
     try {
@@ -243,7 +243,15 @@ async function loadSubtitle(url: string | null | undefined) {
   }
 }
 watch(() => current.value?.task.subtitle_url, loadSubtitle)
+function handleKeydown(event: KeyboardEvent) {
+  if (event.key !== 'Escape') return
+  if (clearConfirm.value) clearConfirm.value = false
+  else if (showUpload.value) showUpload.value = false
+  else if (assistantOpen.value) assistantOpen.value = false
+}
 onMounted(async () => {
+  document.body.classList.add('wall-workspace-active')
+  window.addEventListener('keydown', handleKeydown)
   try {
     await Promise.all([refreshTasks(), refreshModels()])
   } catch (failure) {
@@ -259,6 +267,8 @@ onMounted(async () => {
 })
 onUnmounted(() => {
   stopped = true
+  document.body.classList.remove('wall-workspace-active')
+  window.removeEventListener('keydown', handleKeydown)
   clearInterval(pollTimer)
   clearInterval(previewTimer)
   clearPreview()
@@ -320,6 +330,7 @@ function openFinding(finding: Finding) {
   floor.value = finding.floor
   note.value = finding.note
   kind.value = finding.kind || 'TileSpalling'
+  findingView.value = 'detail'
   seek(finding.evidence_time)
 }
 function review(finding: Finding, state: FindingState) {
@@ -330,12 +341,23 @@ function review(finding: Finding, state: FindingState) {
 }
 function mergeFindings() {
   const target = currentFinding.value
-  if (!target || !window.confirm('把所选记录合并到当前打开的发现？')) return
+  if (!target || !window.confirm('把所选记录合并到当前打开的记录？')) return
   void act(async () => {
     await wallWorkflow.merge(taskId.value, target.id, selected.value)
     selected.value = []
     await refresh()
   }, '已合并所选记录。')
+}
+function clearAllFindings() {
+  clearConfirm.value = false
+  void act(async () => {
+    await wallWorkflow.clearFindings(taskId.value)
+    selected.value = []
+    findingId.value = ''
+    findingView.value = 'list'
+    draftPreview.value = false
+    await refresh()
+  }, '已清空全部巡检记录。')
 }
 function draft() {
   void act(async () => {
@@ -366,7 +388,8 @@ function orderPhoto(kind: 'before' | 'after', file: File) {
 function changeFilter(value: typeof filter.value, reveal = false) {
   filter.value = value
   tab.value = 'findings'
-  if (reveal) reviewPanel.value?.scrollIntoView({ block: 'start', behavior: 'smooth' })
+  findingView.value = 'list'
+  if (reveal) reviewPanel.value?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
 }
 async function ask(text = prompt.value, useProvider = true): Promise<void> {
   if (!text.trim()) return
@@ -386,7 +409,7 @@ async function ask(text = prompt.value, useProvider = true): Promise<void> {
       tab.value = 'findings'
       draftPreview.value = true
       assistantReply.value = '已打开工单预览，请核对所选缺陷。'
-    } else assistantReply.value = '先确认缺陷，再在发现列表勾选需要维修的记录，点击“生成工单”。'
+    } else assistantReply.value = '先确认缺陷，再在记录列表勾选需要维修的记录，点击“生成工单”。'
   } else if (/跳|播放|定位/.test(text)) {
     const match = text.match(/(\d{1,3})[:：]([0-5]\d)|(\d+(?:\.\d+)?)\s*秒/)
     const seconds = match ? (match[3] ? Number(match[3]) : Number(match[1]) * 60 + Number(match[2])) : NaN
@@ -410,57 +433,33 @@ async function ask(text = prompt.value, useProvider = true): Promise<void> {
 </script>
 
 <template>
-  <div class="wall-shell">
+  <div class="wall-shell wall-workspace-shell">
     <WallWorkspaceHeader active="workbench" />
-    <main class="wall-main space-y-4">
-      <div class="wall-hero">
-        <div>
-          <h1>巡检工作台</h1>
-        </div>
+    <main class="wall-main wall-workspace-main">
+      <div class="wall-hero workspace-hero">
+        <div><h1>巡检工作台</h1></div>
         <div class="flex flex-wrap gap-2">
-          <button class="wall-button wall-button--hero" :aria-expanded="showLive" @click="showLive = !showLive"><Radio :size="17" /> 现场直播</button>
           <button class="wall-button wall-button--hero" :aria-expanded="assistantOpen" @click="assistantOpen = !assistantOpen"><MessageCircle :size="17" /> 巡检助手</button>
           <button class="wall-button wall-button--mint" :aria-expanded="showUpload" @click="showUpload = !showUpload"><Plus :size="18" /> 上传视频</button>
         </div>
       </div>
-      <p v-if="error" class="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800" role="alert">{{ error }}</p>
-      <section v-if="!models.length || selectedModel?.ready === false" class="wall-panel panel space-y-2 text-sm">
-        <h2 class="font-semibold">检测模型待准备</h2>
-        <p>{{ selectedModel?.reason || '请添加外墙模型，再上传视频进行检测。ONNX 支持 CPU 推理；PT 需要服务器安装推理依赖。' }}</p>
-        <label v-if="canUploadModel" class="block">添加模型（640×640 单类别 YOLO ONNX）<input type="file" accept=".onnx" class="field" :disabled="busy" @change="uploadModel" /></label>
-        <p v-else>{{ modelUploadHint }}</p>
-        <RouterLink to="/assets?category=wall-model" class="font-semibold underline">打开素材与权重上传中心</RouterLink>
-        <button class="button ml-3" :disabled="busy" @click="act(refreshModels)">重新检查模型</button>
-      </section>
-      <p v-if="notice" class="rounded-md bg-teal-50 p-3 text-sm text-teal-900" role="status">{{ notice }}</p>
-      <WallLive v-if="showLive" />
-      <section v-if="showUpload" class="wall-panel panel">
-        <h2 class="font-semibold">上传巡检视频</h2>
-        <form class="mt-3 grid gap-3 text-sm md:grid-cols-3" @submit.prevent="submitUpload">
-          <label>任务名称<input v-model.trim="name" class="field" maxlength="120" required :disabled="busy" /></label>
-          <label>楼栋<input v-model.trim="building" class="field" maxlength="100" placeholder="例如 2 号楼" required :disabled="busy" /></label>
-          <label>立面<input v-model.trim="facade" class="field" maxlength="60" placeholder="例如 北立面" required :disabled="busy" /></label>
-          <label>视频<input type="file" accept=".mp4,.mov,.avi,.mkv,.webm" class="field" :disabled="busy" @change="source = file($event); progress = null" /></label>
-          <label>对应 SRT（可稍后添加）<input type="file" accept=".srt" class="field" :disabled="busy" @change="initialSubtitle = file($event)" /></label>
-          <div class="flex flex-wrap items-end gap-2">
-            <button type="submit" class="primary" :disabled="busy || !source">{{ progress !== null && !busy ? '继续上传' : '开始上传' }}</button>
-            <button v-if="uploadAbort" type="button" class="button" @click="uploadAbort?.abort()">暂停</button>
+
+      <div class="workspace-alerts">
+        <p v-if="error" class="rounded-md border border-red-200 bg-red-50 text-red-800" role="alert">{{ error }}</p>
+        <section v-if="!models.length || selectedModel?.ready === false" class="wall-panel panel compact-alert">
+          <h2 class="font-semibold">检测模型待准备</h2>
+          <p>{{ selectedModel?.reason || '请添加外墙模型，再上传视频进行检测。ONNX 支持 CPU 推理；PT 需要服务器安装推理依赖。' }}</p>
+          <label v-if="canUploadModel" class="block">添加模型（640×640 单类别 YOLO ONNX）<input type="file" accept=".onnx" class="field" :disabled="busy" @change="uploadModel" /></label>
+          <p v-else>{{ modelUploadHint }}</p>
+          <div class="alert-actions">
+            <RouterLink to="/assets?category=wall-model" class="font-semibold underline">打开素材与权重上传中心</RouterLink>
+            <button class="button" :disabled="busy" @click="act(refreshModels)">重新检查模型</button>
           </div>
-          <p v-if="progress !== null" class="md:col-span-3" role="status">视频上传 {{ progress }}%{{ progress === 100 && busy ? '，正在检查视频' : '' }}</p>
-        </form>
-      </section>
-      <section v-if="assistantOpen" class="wall-panel panel" aria-label="巡检助手">
-        <h2 class="font-semibold">巡检助手</h2>
-        <p class="mt-2 text-sm" role="status">{{ assistantReply }}</p>
-        <div class="mt-3 flex flex-wrap gap-2">
-          <button v-for="question in ['怎么上传字幕', '查看待复核记录', '生成工单']" :key="question" class="button" @click="ask(question)">{{ question }}</button>
-        </div>
-        <form class="mt-3 flex items-end gap-2" @submit.prevent="ask()">
-          <label class="flex-1 text-sm">输入问题或操作<input v-model="prompt" class="field" maxlength="250" placeholder="例如 跳到 02:15" /></label>
-          <button class="primary">发送</button>
-        </form>
-      </section>
-      <section class="wall-panel task-bar">
+        </section>
+        <p v-if="notice" class="rounded-md bg-teal-50 text-teal-900" role="status">{{ notice }}</p>
+      </div>
+
+      <section class="wall-panel task-bar workspace-taskbar">
         <span class="task-icon"><Building2 :size="22" /></span>
         <label class="task-picker text-sm font-semibold">当前任务
           <select v-model="taskId" class="field" :disabled="busy || !tasks.length">
@@ -476,8 +475,9 @@ async function ask(text = prompt.value, useProvider = true): Promise<void> {
         </div>
         <p v-if="!tasks.length && !loading" class="text-sm text-slate-600">还没有巡检任务。上传一段外墙视频即可开始。</p>
       </section>
+
       <template v-if="current">
-        <section v-if="current.counts" aria-label="当前任务统计" class="work-metrics">
+        <section v-if="current.counts" aria-label="当前任务统计" class="work-metrics workspace-metrics">
           <button v-for="card in cards" :key="card.key" class="wall-panel work-metric" :data-kind="card.key"
             :aria-pressed="tab === 'findings' && filter === card.key" @click="changeFilter(card.key, true)">
             <span class="metric-icon"><component :is="card.icon" :size="20" /></span>
@@ -486,179 +486,344 @@ async function ask(text = prompt.value, useProvider = true): Promise<void> {
             </span>
           </button>
         </section>
-        <div class="grid items-start gap-4 xl:grid-cols-[minmax(0,2fr)_minmax(300px,1fr)]">
-          <section class="wall-panel panel space-y-3 footage-panel">
-            <div class="flex flex-wrap items-start justify-between gap-3">
+
+        <div class="workspace-grid">
+          <section class="wall-panel panel footage-panel workspace-footage">
+            <div class="footage-head">
               <div><h2 class="wall-panel-title flex items-center gap-2"><Film :size="19" /> 巡检录像</h2><p class="mt-1 text-sm text-slate-600">{{ current.task.name }}</p></div>
               <span class="flex items-center gap-1 text-sm text-slate-600"><MapPin :size="15" /> {{ current.task.building }} · {{ current.task.facade }}</span>
             </div>
-            <div class="relative">
-            <video :key="current.task.id" ref="video" :src="current.task.video_url" controls playsinline preload="metadata"
-              class="aspect-video w-full rounded-md bg-slate-950 object-contain"
-              @timeupdate="videoTime = video?.currentTime || 0" @seeking="clearPreview" @seeked="videoTime = video?.currentTime || 0" @pause="clearPreview" @play="detectPlayback" @error="videoError = true; clearPreview()" />
-            <svg v-if="preview && realtime" class="pointer-events-none absolute inset-0 h-full w-full" :viewBox="`0 0 ${preview.width} ${preview.height}`" preserveAspectRatio="xMidYMid meet" aria-label="当前画面检测框">
-              <rect v-for="(box, index) in preview.boxes" :key="index" :x="box[0]" :y="box[1]" :width="(box[2] || 0) - (box[0] || 0)" :height="(box[3] || 0) - (box[1] || 0)" fill="none" stroke="#facc15" stroke-width="2" vector-effect="non-scaling-stroke" />
-            </svg>
+            <div class="video-frame relative">
+              <video :key="current.task.id" ref="video" :src="current.task.video_url" controls playsinline preload="metadata"
+                class="workspace-video"
+                @timeupdate="videoTime = video?.currentTime || 0" @seeking="clearPreview" @seeked="videoTime = video?.currentTime || 0" @pause="clearPreview" @play="detectPlayback" @error="videoError = true; clearPreview()" />
+              <svg v-if="preview" class="pointer-events-none absolute inset-0 h-full w-full" :viewBox="`0 0 ${preview.width} ${preview.height}`" preserveAspectRatio="xMidYMid slice" aria-label="当前画面检测框">
+                <rect v-for="(box, index) in preview.boxes" :key="index" :x="box[0]" :y="box[1]" :width="(box[2] || 0) - (box[0] || 0)" :height="(box[3] || 0) - (box[1] || 0)" fill="none" stroke="#facc15" stroke-width="2" vector-effect="non-scaling-stroke" />
+              </svg>
             </div>
-            <div v-if="manager" class="flex flex-wrap items-center gap-3 text-sm">
-              <label><input v-model="realtime" type="checkbox" :disabled="!model || selectedModel?.ready === false || analyzing" /> 边播放边检测</label>
-              <span v-if="preview">本帧 {{ preview.boxes.length }} 处疑似 · 推理 {{ preview.inference_ms }} ms</span>
-              <span v-else-if="realtime">{{ previewBusy ? '正在分析画面…' : '播放视频后逐帧检测' }}</span>
-            </div>
-            <p v-if="previewError" class="text-sm text-red-800" role="alert">{{ previewError }}</p>
-            <p v-if="realtime" class="text-xs text-slate-600">按服务器速度抽帧显示检测框；点击“开始检测”可生成完整分析记录与工单依据。</p>
-            <p v-if="videoError" class="text-sm text-red-800">浏览器无法播放这个文件。请尝试使用 MP4 格式的视频。</p>
-            <div v-if="manager" class="space-y-3">
-              <div v-if="run" class="text-sm text-slate-700">
-                <p>{{ time(run.coverage) }} 已分析<span v-if="current.task.duration"> / {{ time(current.task.duration) }} 视频</span> · {{ run.frame_count }} 帧</p>
-                <progress v-if="covered !== null" :value="covered" max="100" aria-label="已分析时长" class="mt-1 w-full" />
-                <p v-if="run.error" class="mt-1 text-red-800">{{ run.error }}</p>
+            <div class="footage-controls">
+              <div v-if="manager" class="control-row">
+                <span v-if="preview">本帧 {{ preview.boxes.length }} 处疑似 · 推理 {{ preview.inference_ms }} ms</span>
+                <span v-else>{{ previewBusy ? '正在分析画面…' : '播放视频后逐帧检测' }}</span>
               </div>
-              <div v-if="analyzing && run">
-                <button class="button" :disabled="busy" @click="act(async () => { await wallWorkflow.cancel(taskId, run!.id); await refresh() }, '已停止分析。')">停止分析</button>
-              </div>
-              <details v-else class="rounded-md border border-slate-200 px-3 py-2.5">
-                <summary class="cursor-pointer font-semibold"><SlidersHorizontal :size="15" class="mr-1 inline-block align-[-2px]" />检测设置</summary>
-                <div class="mt-3 grid gap-3 text-sm sm:grid-cols-2">
-                  <label>检测模型<select v-model="model" class="field"><option value="" disabled>请选择模型</option><option v-for="option in models" :key="option.id" :value="option.id">{{ option.name }}</option></select></label>
-                  <label>检测范围<select v-model="mode" class="field"><option value="sample">快速分析</option><option value="all">逐帧分析</option></select></label>
-                  <label>检测灵敏度 {{ Math.round(sensitivity * 100) }}%
-                    <input v-model.number="sensitivity" type="range" min="0.05" max="0.95" step="0.01" class="mt-2 block w-full accent-teal-700" />
-                    <span class="block text-slate-600">调高会标出更多疑似位置。</span>
-                  </label>
-                  <label>重叠框合并阈值<input v-model.number="iou" type="number" step="0.05" min="0.05" max="0.95" class="field" /></label>
-                  <label v-if="canUploadModel" class="sm:col-span-2">添加模型（640×640 单类别 YOLO ONNX）<input type="file" accept=".onnx" class="field" :disabled="busy" @change="uploadModel" /></label>
+              <p v-if="previewError" class="text-red-800" role="alert">{{ previewError }}</p>
+              <p class="text-slate-600">按服务器速度抽帧显示检测框；点击“开始检测”可生成完整分析记录与工单依据。</p>
+              <p v-if="videoError" class="text-red-800">浏览器无法播放这个文件。请尝试使用 MP4 格式的视频。</p>
+              <div v-if="manager" class="control-stack">
+                <div v-if="run" class="text-slate-700">
+                  <p>{{ time(run.coverage) }} 已分析<span v-if="current.task.duration"> / {{ time(current.task.duration) }} 视频</span> · {{ run.frame_count }} 帧</p>
+                  <progress v-if="covered !== null" :value="covered" max="100" aria-label="已分析时长" class="mt-1 w-full" />
+                  <p v-if="run.error" class="mt-1 text-red-800">{{ run.error }}</p>
                 </div>
-              </details>
-              <button v-if="!analyzing" class="primary" :disabled="busy || !model || selectedModel?.ready === false"
-                @click="act(async () => { realtime = false; await wallWorkflow.run(taskId, model, sensitivity, mode, iou); await refresh() }, '分析已开始，可继续查看视频。')">开始检测</button>
-              <p v-if="!model" class="text-sm text-slate-600">开始检测前，请在检测设置中添加模型。</p>
+                <div v-if="analyzing && run">
+                  <button class="button" :disabled="busy" @click="act(async () => { await wallWorkflow.cancel(taskId, run!.id); await refresh() }, '已停止分析。')">停止分析</button>
+                </div>
+                <details v-else class="rounded-md border border-slate-200 px-3 py-2">
+                  <summary class="cursor-pointer font-semibold"><SlidersHorizontal :size="15" class="mr-1 inline-block align-[-2px]" />检测设置</summary>
+                  <div class="mt-2 grid gap-2 sm:grid-cols-2">
+                    <label>检测模型<select v-model="model" class="field"><option value="" disabled>请选择模型</option><option v-for="option in models" :key="option.id" :value="option.id">{{ option.name }}</option></select></label>
+                    <label>检测范围<select v-model="mode" class="field"><option value="sample">快速分析</option><option value="all">逐帧分析</option></select></label>
+                    <label>检测灵敏度 {{ Math.round(sensitivity * 100) }}%
+                      <input v-model.number="sensitivity" type="range" min="0.05" max="0.95" step="0.01" class="mt-1 block w-full accent-teal-700" />
+                    </label>
+                    <label>重叠框合并阈值<input v-model.number="iou" type="number" step="0.05" min="0.05" max="0.95" class="field" /></label>
+                    <label v-if="canUploadModel" class="sm:col-span-2">添加模型（640×640 单类别 YOLO ONNX）<input type="file" accept=".onnx" class="field" :disabled="busy" @change="uploadModel" /></label>
+                  </div>
+                </details>
+                <button v-if="!analyzing" class="primary" :disabled="busy || !model || selectedModel?.ready === false"
+                  @click="act(async () => { await wallWorkflow.run(taskId, model, sensitivity, mode, iou); await refresh() }, '分析已开始，可继续查看视频。')">开始检测</button>
+                <p v-if="!model" class="text-slate-600">开始检测前，请在检测设置中添加模型。</p>
+              </div>
             </div>
           </section>
-          <section class="wall-panel panel">
-            <h2 class="wall-panel-title flex items-center gap-2"><MapPin :size="18" /> 飞行数据</h2>
-            <div v-if="routePoints.length" class="mt-3 overflow-hidden rounded-md border border-slate-200">
-              <WallLocationMap :points="routePoints" :current="currentPoint" compact />
-            </div>
-            <dl v-if="currentPoint" class="mt-3 grid grid-cols-2 gap-2 text-sm">
-              <div class="col-span-2"><dt class="text-slate-600">拍摄位置 · 经纬度</dt><dd class="font-mono">{{ currentPoint.longitude.toFixed(6) }}, {{ currentPoint.latitude.toFixed(6) }}</dd></div>
-              <div><dt class="text-slate-600">相对起飞点高度</dt><dd>{{ telemetry?.altitudeAvailable && Number.isFinite(telemetry.relAlt) ? telemetry.relAlt.toFixed(1) + ' 米' : '—' }}</dd></div>
-              <div><dt class="text-slate-600">飞行速度</dt><dd>{{ telemetry?.speed !== undefined && Number.isFinite(telemetry.speed) ? telemetry.speed.toFixed(1) + ' 米/秒' : '—' }}</dd></div>
-              <div><dt class="text-slate-600">视频时间</dt><dd>{{ time(videoTime) }}</dd></div>
-            </dl>
-            <p v-else class="mt-3 text-sm text-slate-600">{{ telemetryError ? '字幕暂时无法读取。' : !current.task.subtitle_url ? '暂无字幕数据。' : '当前画面没有可用的定位数据。' }}</p>
-            <div v-if="manager" class="mt-4 space-y-3 text-sm">
-              <form v-if="current.task.subtitle_url" class="flex flex-wrap items-end gap-2" @submit.prevent="saveOffset(subtitleOffset)">
+
+          <section class="wall-panel panel workspace-rail">
+            <div class="rail-flight">
+              <h2 class="rail-title"><MapPin :size="18" /> 飞行数据</h2>
+              <div v-if="routePoints.length" class="map-frame">
+                <WallLocationMap :points="routePoints" :current="currentPoint" compact />
+              </div>
+              <dl v-if="currentPoint" class="telemetry-grid">
+                <div><dt>拍摄位置 · 经纬度</dt><dd class="font-mono">{{ currentPoint.longitude.toFixed(6) }}, {{ currentPoint.latitude.toFixed(6) }}</dd></div>
+                <div><dt>相对起飞点高度</dt><dd>{{ telemetry?.altitudeAvailable && Number.isFinite(telemetry.relAlt) ? telemetry.relAlt.toFixed(1) + ' 米' : '—' }}</dd></div>
+                <div><dt>飞行速度</dt><dd>{{ telemetry?.speed !== undefined && Number.isFinite(telemetry.speed) ? telemetry.speed.toFixed(1) + ' 米/秒' : '—' }}</dd></div>
+                <div><dt>视频时间</dt><dd>{{ time(videoTime) }}</dd></div>
+              </dl>
+              <p v-else class="mt-2 text-sm text-slate-600">{{ telemetryError ? '字幕暂时无法读取。' : !current.task.subtitle_url ? '暂无字幕数据。' : '当前画面没有可用的定位数据。' }}</p>
+              <form v-if="manager && current.task.subtitle_url" class="offset-form" @submit.prevent="saveOffset(subtitleOffset)">
                 <label>字幕延后秒数<input v-model.number="subtitleOffset" type="number" step="0.1" class="field" /></label>
                 <button class="button" :disabled="busy">保存</button>
                 <button type="button" class="button" :disabled="busy" @click="saveOffset(0)">恢复</button>
               </form>
             </div>
-          </section>
-        </div>
-        <section ref="reviewPanel" class="wall-panel panel review-panel">
-          <div class="flex flex-wrap items-center justify-between gap-3">
-            <div class="review-nav">
-              <button :aria-pressed="tab === 'findings'" @click="tab = 'findings'"><ListChecks :size="17" /> 巡检发现</button>
-              <button :aria-pressed="tab === 'orders'" @click="tab = 'orders'"><Wrench :size="17" /> 维修工单</button>
-            </div>
-            <div v-if="manager" class="flex flex-wrap gap-2">
-              <a class="button" :href="webPath('/api/v1/wall/workflow/tasks/' + taskId + '/export')"><FileDown :size="16" /> 导出明细</a>
-              <a class="button" :href="webPath('/api/v1/wall/workflow/tasks/' + taskId + '/report')"><FileDown :size="16" /> 导出报告</a>
-            </div>
-          </div>
-          <template v-if="tab === 'findings'">
-            <div class="mt-4 flex flex-wrap items-end gap-2">
-              <label class="text-sm">筛选<select v-model="filter" class="field">
-                <option value="all">全部发现</option><option v-for="card in cards" :key="card.key" :value="card.key">{{ card.label }}</option><option value="dismissed">已排除</option>
-              </select></label>
-              <button v-if="manager" class="primary" :disabled="busy || !mayDraft" @click="draftPreview = true">生成工单</button>
-              <button v-if="manager && currentFinding && selected.some(id => id !== currentFinding?.id)" class="button" :disabled="busy" @click="mergeFindings">合并到当前记录</button>
-            </div>
-            <div v-if="draftPreview" class="mt-3 rounded-md border border-teal-200 bg-teal-50 p-3">
-              <p class="text-sm">{{ current.task.building }} {{ current.task.facade }} · 已选 {{ selected.length }} 处确认缺陷</p>
-              <div class="mt-2 flex gap-2"><button class="primary" :disabled="busy || !mayDraft" @click="draft">确认生成草稿</button><button class="button" @click="draftPreview = false">返回</button></div>
-            </div>
-            <div class="mt-3 grid gap-4 xl:grid-cols-2">
-              <ul class="divide-y divide-slate-200">
-                <li v-for="finding in visibleFindings" :key="finding.id" class="flex items-center gap-3 py-2">
-                  <input v-if="manager && ['pending','confirmed'].includes(finding.state)" v-model="selected" type="checkbox" :value="finding.id"
-                    :aria-label="'选择 ' + time(finding.evidence_time) + ' 的发现'" class="size-4 shrink-0 accent-teal-700" />
-                  <button class="flex min-w-0 flex-1 items-center gap-3 rounded-md p-1 text-left hover:bg-slate-50" @click="openFinding(finding)">
-                    <img v-if="finding.image_url" :src="finding.image_url" alt="" loading="lazy" class="h-12 w-16 rounded bg-slate-100 object-cover" />
-                    <span class="min-w-0 flex-1"><span class="block text-sm font-medium">{{ kindLabels[finding.kind] || '缺陷' }} · {{ time(finding.evidence_time) }} · {{ finding.floor || '楼层待核实' }}</span><span class="block text-sm text-slate-600">{{ labels[finding.state] }}<template v-if="finding.zone"> · {{ finding.zone }}</template></span></span>
-                    <span class="text-sm text-teal-800">查看</span>
-                  </button>
-                </li>
-                <li v-if="!visibleFindings.length" class="py-4 text-sm text-slate-600">{{ !run && !current.findings.length ? '还未检测。' : run?.state === 'completed' && !current.findings.length ? '本次已检测画面未发现疑似缺陷。' : '暂无符合条件的记录。' }}</li>
-              </ul>
-              <div v-if="currentFinding" class="rounded-md border border-slate-200 p-3">
-                <img v-if="currentFinding.image_url" :src="currentFinding.image_url" alt="缺陷检测截图" class="max-h-72 w-full rounded-md bg-slate-100 object-contain" />
-                <p class="mt-2 text-sm text-slate-600">{{ kindLabels[currentFinding.kind] || '缺陷' }} · 视频 {{ localTime(currentFinding.evidence_time) }} · {{ labels[currentFinding.state] }}<template v-if="currentFinding.zone"> · {{ currentFinding.zone }}</template></p>
-                <template v-if="manager">
-                  <label class="mt-3 block text-sm">缺陷类型<select v-model="kind" class="field"><option value="Crack">裂缝</option><option value="Seepage">渗水</option><option value="TileSpalling">面砖脱落</option></select></label>
-                  <label class="mt-3 block text-sm">楼层<input v-model.trim="floor" class="field" maxlength="60" placeholder="例如 3 层窗下" /></label>
-                  <label class="mt-2 block text-sm">位置或复核说明<textarea v-model.trim="note" class="field" maxlength="1500" rows="2" /></label>
-                  <div class="mt-3 flex flex-wrap gap-2">
-                    <button class="primary" :disabled="busy" @click="review(currentFinding, 'confirmed')">{{ currentFinding.state === 'confirmed' ? '保存复核' : '确认缺陷' }}</button>
-                    <button class="button" :disabled="busy" @click="review(currentFinding, 'dismissed')">排除</button>
-                    <button v-if="currentFinding.state === 'dismissed'" class="button" :disabled="busy" @click="review(currentFinding, 'pending')">恢复待复核</button>
+
+            <section ref="reviewPanel" class="review-panel">
+              <div class="review-head">
+                <div class="review-nav">
+                  <button :aria-pressed="tab === 'findings'" @click="tab = 'findings'; findingView = 'list'"><ListChecks :size="17" /> 巡检记录</button>
+                  <button :aria-pressed="tab === 'orders'" @click="tab = 'orders'"><Wrench :size="17" /> 维修工单</button>
+                </div>
+                <div v-if="manager" class="review-actions">
+                  <a class="button" :href="webPath('/api/v1/wall/workflow/tasks/' + taskId + '/export')"><FileDown :size="16" /> 导出明细</a>
+                  <a class="button" :href="webPath('/api/v1/wall/workflow/tasks/' + taskId + '/report')"><FileDown :size="16" /> 导出报告</a>
+                </div>
+              </div>
+              <div class="review-body">
+                <template v-if="tab === 'findings'">
+                  <div class="review-tools">
+                    <label>筛选<select v-model="filter" class="field">
+                      <option value="all">全部记录</option><option v-for="card in cards" :key="card.key" :value="card.key">{{ card.label }}</option><option value="dismissed">已排除</option>
+                    </select></label>
+                    <button v-if="manager" class="primary" :disabled="busy || !mayDraft" @click="draftPreview = true">生成工单</button>
+                    <button v-if="manager && currentFinding && selected.some(id => id !== currentFinding?.id)" class="button" :disabled="busy" @click="mergeFindings">合并到当前记录</button>
+                    <button v-if="manager && visibleFindings.length" class="button button--danger" :disabled="busy" @click="clearConfirm = true"><Trash2 :size="14" /> 一键清除</button>
+                  </div>
+                  <div v-if="draftPreview" class="draft-preview">
+                    <p>{{ current.task.building }} {{ current.task.facade }} · 已选 {{ selected.length }} 处确认缺陷</p>
+                    <div class="mt-2 flex gap-2"><button class="primary" :disabled="busy || !mayDraft" @click="draft">确认生成草稿</button><button class="button" @click="draftPreview = false">返回</button></div>
+                  </div>
+                  <div class="finding-layout" :data-view="findingView">
+                    <ul v-show="findingView === 'list'" class="finding-list divide-y divide-slate-200">
+                      <li v-for="finding in visibleFindings" :key="finding.id" class="flex items-center gap-2 py-1.5">
+                        <input v-if="manager && ['pending','confirmed'].includes(finding.state)" v-model="selected" type="checkbox" :value="finding.id"
+                          :aria-label="'选择 ' + time(finding.evidence_time) + ' 的记录'" class="size-4 shrink-0 accent-teal-700" />
+                        <button class="flex min-w-0 flex-1 items-center gap-2 rounded-md p-1 text-left hover:bg-slate-50" @click="openFinding(finding)">
+                          <img v-if="finding.image_url" :src="finding.image_url" alt="" loading="lazy" class="h-10 w-14 shrink-0 rounded bg-slate-100 object-cover" />
+                          <span class="min-w-0 flex-1"><span class="block truncate text-xs font-medium">{{ kindLabels[finding.kind] || '缺陷' }} · {{ time(finding.evidence_time) }} · {{ finding.floor || '楼层待核实' }}</span><span class="block truncate text-xs text-slate-600">{{ labels[finding.state] }}<template v-if="finding.zone"> · {{ finding.zone }}</template></span></span>
+                        </button>
+                      </li>
+                      <li v-if="!visibleFindings.length" class="py-4 text-xs text-slate-600">{{ !run && !current.findings.length ? '还未检测。' : run?.state === 'completed' && !current.findings.length ? '本次已检测画面未发现疑似缺陷。' : '暂无符合条件的记录。' }}</li>
+                    </ul>
+                    <div v-if="currentFinding && findingView === 'detail'" class="finding-detail">
+                      <div class="detail-head"><button type="button" class="button" @click="findingView = 'list'"><ArrowLeft :size="14" /> 返回列表</button></div>
+                      <img v-if="currentFinding.image_url" :src="currentFinding.image_url" alt="缺陷检测截图" class="w-full rounded-md bg-slate-100 object-contain" />
+                      <p class="mt-1 text-xs text-slate-600">{{ kindLabels[currentFinding.kind] || '缺陷' }} · 视频 {{ localTime(currentFinding.evidence_time) }} · {{ labels[currentFinding.state] }}<template v-if="currentFinding.zone"> · {{ currentFinding.zone }}</template></p>
+                      <template v-if="manager">
+                        <label class="mt-2 block text-xs">缺陷类型<select v-model="kind" class="field"><option value="Crack">裂缝</option><option value="Seepage">渗水</option><option value="TileSpalling">面砖脱落</option></select></label>
+                        <label class="mt-2 block text-xs">楼层<input v-model.trim="floor" class="field" maxlength="60" placeholder="例如 3 层窗下" /></label>
+                        <label class="mt-2 block text-xs">位置或复核说明<textarea v-model.trim="note" class="field" maxlength="1500" rows="2" /></label>
+                        <div class="mt-2 flex flex-wrap gap-1.5">
+                          <button class="primary" :disabled="busy" @click="review(currentFinding, 'confirmed')">{{ currentFinding.state === 'confirmed' ? '保存复核' : '确认缺陷' }}</button>
+                          <button class="button" :disabled="busy" @click="review(currentFinding, 'dismissed')">排除</button>
+                          <button v-if="currentFinding.state === 'dismissed'" class="button" :disabled="busy" @click="review(currentFinding, 'pending')">恢复待复核</button>
+                        </div>
+                      </template>
+                    </div>
+                  </div>
+                </template>
+                <template v-else>
+                  <div class="order-scroll">
+                    <label v-if="current.orders.length > 1" class="block text-sm">选择工单
+                      <select class="field" :value="order?.id" @change="orderId = ($event.target as HTMLSelectElement).value">
+                        <option v-for="item in current.orders" :key="item.id" :value="item.id">{{ item.id.slice(0, 8) }} · {{ item.finding_ids.length }} 处缺陷</option>
+                      </select>
+                    </label>
+                    <WallWorkOrder v-if="order" :order="order" :findings="current.findings" :manager="manager" :busy="busy"
+                      @update="orderAction" @photo="orderPhoto" @seek="seek" />
+                    <p v-else class="text-sm text-slate-600">暂无维修工单。</p>
                   </div>
                 </template>
               </div>
-            </div>
-          </template>
-          <template v-else>
-            <label v-if="current.orders.length > 1" class="mt-3 block max-w-md text-sm">选择工单
-              <select class="field" :value="order?.id" @change="orderId = ($event.target as HTMLSelectElement).value">
-                <option v-for="item in current.orders" :key="item.id" :value="item.id">{{ item.id.slice(0, 8) }} · {{ item.finding_ids.length }} 处缺陷</option>
-              </select>
-            </label>
-            <WallWorkOrder v-if="order" class="mt-3" :order="order" :findings="current.findings" :manager="manager" :busy="busy"
-              @update="orderAction" @photo="orderPhoto" @seek="seek" />
-            <p v-else class="mt-3 text-sm text-slate-600">暂无维修工单。</p>
-          </template>
-        </section>
+            </section>
+          </section>
+        </div>
       </template>
     </main>
+
+    <div v-if="showUpload" class="modal-layer" @click.self="showUpload = false">
+      <section class="modal-card" role="dialog" aria-modal="true" aria-label="上传巡检视频">
+        <div class="modal-head"><h2>上传巡检视频</h2><button type="button" class="icon-button" aria-label="关闭" @click="showUpload = false"><X :size="18" /></button></div>
+        <form class="upload-form" @submit.prevent="submitUpload">
+          <label>任务名称<input v-model.trim="name" class="field" maxlength="120" required :disabled="busy" /></label>
+          <div class="grid gap-3 sm:grid-cols-2">
+            <label>楼栋<input v-model.trim="building" class="field" maxlength="100" placeholder="例如 2 号楼" required :disabled="busy" /></label>
+            <label>立面<input v-model.trim="facade" class="field" maxlength="60" placeholder="例如 北立面" required :disabled="busy" /></label>
+          </div>
+          <div class="grid gap-3 sm:grid-cols-2">
+            <label>视频<input type="file" accept=".mp4,.mov,.avi,.mkv,.webm" class="field" :disabled="busy" @change="source = file($event); progress = null" /></label>
+            <label>对应 SRT（可稍后添加）<input type="file" accept=".srt" class="field" :disabled="busy" @change="initialSubtitle = file($event)" /></label>
+          </div>
+          <div class="actions">
+            <button type="submit" class="primary" :disabled="busy || !source">{{ progress !== null && !busy ? '继续上传' : '开始上传' }}</button>
+            <button v-if="uploadAbort" type="button" class="button" @click="uploadAbort?.abort()">暂停</button>
+            <button type="button" class="button" @click="showUpload = false">取消</button>
+          </div>
+          <p v-if="progress !== null" role="status">视频上传 {{ progress }}%{{ progress === 100 && busy ? '，正在检查视频' : '' }}</p>
+        </form>
+      </section>
+    </div>
+
+    <div v-if="assistantOpen" class="modal-layer" @click.self="assistantOpen = false">
+      <section class="modal-card modal-card--assistant" role="dialog" aria-modal="true" aria-label="巡检助手">
+        <div class="modal-head"><h2>巡检助手</h2><button type="button" class="icon-button" aria-label="关闭" @click="assistantOpen = false"><X :size="18" /></button></div>
+        <p class="assistant-reply" role="status">{{ assistantReply }}</p>
+        <div class="mt-3 flex flex-wrap gap-2">
+          <button v-for="question in ['怎么上传字幕', '查看待复核记录', '生成工单']" :key="question" class="button" @click="ask(question)">{{ question }}</button>
+        </div>
+        <form class="assistant-form" @submit.prevent="ask()">
+          <label class="flex-1 text-sm">输入问题或操作<input v-model="prompt" class="field" maxlength="250" placeholder="例如 跳到 02:15" /></label>
+          <button class="primary">发送</button>
+        </form>
+      </section>
+    </div>
+
+    <div v-if="clearConfirm" class="modal-layer" @click.self="clearConfirm = false">
+      <section class="modal-card modal-card--confirm" role="alertdialog" aria-modal="true" aria-label="确认清空巡检记录">
+        <div class="modal-head"><h2>清空全部巡检记录</h2><button type="button" class="icon-button" aria-label="关闭" @click="clearConfirm = false"><X :size="18" /></button></div>
+        <p>将删除本任务全部 {{ current?.findings.length ?? 0 }} 条巡检记录及对应截图，并解除与维修工单的关联；工单本身保留。此操作不可恢复。</p>
+        <div class="modal-actions">
+          <button type="button" class="button button--danger" :disabled="busy" @click="clearAllFindings">确认清空</button>
+          <button type="button" class="button" :disabled="busy" @click="clearConfirm = false">取消</button>
+        </div>
+      </section>
+    </div>
   </div>
 </template>
 
 <style scoped>
+.wall-workspace-shell {
+  position: relative; display: flex; flex-direction: column;
+  height: 100vh; height: 100dvh; min-height: 0; overflow: hidden;
+}
+.wall-workspace-main {
+  display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0;
+  max-width: none; gap: .7rem; padding-block: .85rem;
+  padding-inline: clamp(.75rem, 2vw, 1.5rem); overflow: hidden;
+}
+.workspace-hero { flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: .5rem; padding: .6rem .9rem; border-radius: 12px; }
+.workspace-hero h1 { font-size: 1.2rem; }
+.workspace-alerts { flex: 0 0 auto; display: flex; flex-direction: column; gap: .35rem; max-height: 112px; overflow-y: auto; }
+.workspace-alerts p { margin: 0; padding: .4rem .7rem; border-radius: 8px; font-size: .8125rem; }
+.compact-alert { display: flex; flex-wrap: wrap; align-items: center; gap: .3rem .75rem; padding: .5rem .8rem; font-size: .8125rem; }
+.compact-alert h2 { margin: 0; font-size: .88rem; white-space: nowrap; }
+.compact-alert > p { flex: 1 1 320px; margin: 0; }
+.compact-alert > label { flex: 1 1 320px; margin: 0; }
+.compact-alert > label input { min-height: 32px; }
+.alert-actions { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem; margin-left: auto; }
+.workspace-taskbar { flex: 0 0 auto; padding: .55rem .85rem; }
+.workspace-metrics { flex: 0 0 auto; gap: .5rem; }
+.workspace-metrics .work-metric { padding: .5rem .7rem; }
+.workspace-metrics .work-metric strong { font-size: 1.15rem; }
+.workspace-metrics .metric-icon { width: 32px; height: 32px; }
+.workspace-grid {
+  --rail-width: clamp(360px, 30vw, 480px);
+  flex: 1; min-width: 0; min-height: 0; display: grid;
+  grid-template-columns: minmax(0, 1fr) var(--rail-width);
+  gap: .8rem; overflow: hidden;
+}
+.workspace-footage, .workspace-rail { min-width: 0; padding: .7rem .85rem; display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
+.footage-head { flex: 0 0 auto; display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: .5rem; }
+.video-frame { flex: 1; min-width: 0; min-height: 180px; overflow: hidden; border-radius: 10px; background: #0b1624; }
+.workspace-video { display: block; width: 100%; max-width: 100%; height: 100%; object-fit: cover; background: #0b1624; }
+.footage-controls { flex: 0 1 auto; min-height: 0; max-height: 42%; overflow-y: auto; padding-top: .5rem; font-size: .8125rem; }
+.control-row { display: flex; flex-wrap: wrap; align-items: center; gap: .9rem; }
+.control-stack { display: flex; flex-direction: column; gap: .5rem; }
+.control-stack p { margin: 0; }
+.rail-flight { flex: 0 0 auto; min-width: 0; max-height: 34vh; overflow-y: auto; padding-bottom: .45rem; }
+.rail-title, .wall-panel-title { display: flex; align-items: center; gap: .4rem; font-size: .95rem; font-weight: 700; }
+.map-frame { height: clamp(100px, 16vh, 148px); margin-top: .45rem; overflow: hidden; border: 1px solid var(--wall-line); border-radius: 8px; }
+.map-frame :deep(.h-56) { height: 100% !important; }
+.telemetry-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .35rem .5rem; margin-top: .5rem; font-size: .75rem; }
+.telemetry-grid > div:first-child { grid-column: 1 / -1; }
+.telemetry-grid dt { color: var(--wall-muted); }
+.telemetry-grid dd { margin: 0; font-variant-numeric: tabular-nums; }
+.offset-form { display: flex; flex-wrap: wrap; align-items: flex-end; gap: .4rem; margin-top: .5rem; font-size: .75rem; }
+.review-panel { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; border-top: 1px solid var(--wall-line); overflow: hidden; }
+.review-head { flex: 0 0 auto; min-width: 0; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: .4rem; padding-top: .55rem; }
+.review-actions { display: flex; flex-wrap: wrap; gap: .35rem; }
+.review-body { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+.review-tools { flex: 0 0 auto; display: flex; flex-wrap: wrap; align-items: flex-end; gap: .4rem; padding-top: .4rem; font-size: .75rem; }
+.draft-preview { flex: 0 0 auto; margin-top: .4rem; padding: .5rem .65rem; border: 1px solid #99d6c7; border-radius: 8px; background: #f0faf6; font-size: .8125rem; }
+.finding-layout { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; padding-top: .45rem; overflow: hidden; }
+.finding-list, .finding-detail, .order-scroll { min-height: 0; overflow-y: auto; border: 1px solid var(--wall-line); border-radius: 8px; }
+.finding-list { flex: 1; padding: 0 .5rem; }
+.finding-detail { flex: 1; padding: .5rem; }
+.detail-head { display: flex; align-items: center; margin-bottom: .45rem; }
+.finding-detail img { max-height: 200px; }
+.order-scroll { flex: 1; padding: .5rem; }
+.modal-layer { position: absolute; inset: 0; z-index: 2000; display: flex; align-items: center; justify-content: center; padding: 1.5rem; background: #0b1f2e78; }
+.modal-card { width: min(760px, 100%); max-height: 80vh; max-height: 80dvh; overflow-y: auto; border-radius: 14px; background: #fff; padding: 1.25rem; box-shadow: 0 18px 48px #0b1f2e40; }
+.modal-card--assistant { width: min(560px, 100%); }
+.modal-card--confirm { width: min(440px, 100%); }
+.modal-card--confirm p { color: var(--wall-muted); font-size: .875rem; line-height: 1.6; }
+.modal-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: .5rem; margin-top: 1.25rem; }
+.button--danger { color: #b42318; border-color: #e5a29b; background: #fff; }
+.button--danger:hover:not(:disabled) { background: #fef3f2; border-color: #b42318; }
+.modal-head { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin-bottom: 1rem; }
+.modal-head h2 { font-size: 1.05rem; font-weight: 700; }
+.icon-button { display: inline-flex; align-items: center; justify-content: center; width: 34px; height: 34px; border: 1px solid #ccd7e2; border-radius: 8px; background: #fff; }
+.upload-form { display: grid; gap: .75rem; font-size: .875rem; }
+.upload-form .actions { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; }
+.assistant-reply { min-height: 68px; padding: .75rem; border-radius: 8px; background: #f1f6fa; font-size: .875rem; }
+.assistant-form { display: flex; align-items: flex-end; gap: .5rem; margin-top: .75rem; }
 .panel { padding: clamp(.9rem, 2vw, 1.2rem); }
-.field { display: block; width: 100%; margin-top: .25rem; min-height: 42px; padding: .4rem .65rem; border: 1px solid #c9d5e1; border-radius: 7px; background: white; }
-.button,.primary { display: inline-flex; min-height: 42px; align-items: center; justify-content: center; gap: .35rem; border: 1px solid #ccd7e2; border-radius: 7px; padding: .4rem .8rem; font-size: .875rem; font-weight: 600; }
+.field { display: block; width: 100%; margin-top: .25rem; min-height: 38px; padding: .35rem .6rem; border: 1px solid #c9d5e1; border-radius: 7px; background: white; }
+.button,.primary { display: inline-flex; min-height: 38px; align-items: center; justify-content: center; gap: .35rem; border: 1px solid #ccd7e2; border-radius: 7px; padding: .35rem .7rem; font-size: .8125rem; font-weight: 600; }
 .button:hover { background: #f1f6fa; border-color: #7f9aab; }
 .primary { color: white; background: var(--wall-accent); border-color: var(--wall-accent); }
 .primary:hover:not(:disabled) { background: var(--wall-accent-dark); }
-.task-bar { display: flex; flex-wrap: wrap; align-items: center; gap: .85rem; padding: .8rem 1rem; }
-.task-icon { display: grid; place-items: center; flex-shrink: 0; width: 42px; height: 42px; border-radius: 8px; background: #e8f1f7; color: #315a77; }
+.task-bar { display: flex; flex-wrap: wrap; align-items: center; gap: .85rem; }
+.task-icon { display: grid; place-items: center; flex-shrink: 0; width: 38px; height: 38px; border-radius: 8px; background: #e8f1f7; color: #315a77; }
 .task-picker { width: min(480px, 100% - 56px); }
 .task-meta { display: flex; flex-wrap: wrap; align-items: center; gap: .65rem; margin-left: auto; color: var(--wall-muted); font-size: .8125rem; }
 .status-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
 .work-metrics { display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap: .75rem; }
-.work-metric { --metric: #315a77; --metric-bg: #e8f2fc; display: flex; align-items: center; min-width: 0; gap: .8rem; padding: .85rem 1rem; border-left: 3px solid var(--metric); text-align: left; }
+.work-metric { --metric: #315a77; --metric-bg: #e8f2fc; display: flex; align-items: center; min-width: 0; gap: .7rem; padding: .7rem .85rem; border-left: 3px solid var(--metric); text-align: left; }
 .work-metric[data-kind="pending"] { --metric: #8c510c; --metric-bg: #fff2d9; }
 .work-metric[data-kind="assigned"] { --metric: #57538d; --metric-bg: #efecfb; }
 .work-metric[data-kind="completed"] { --metric: #126749; --metric-bg: #e3f5eb; }
 .work-metric:hover, .work-metric[aria-pressed="true"] { background: var(--metric-bg); }
-.metric-icon { display: grid; place-items: center; width: 39px; height: 39px; flex-shrink: 0; border-radius: 8px; background: var(--metric-bg); color: var(--metric); }
-.metric-label { color: var(--wall-muted); font-size: .8125rem; }
-.work-metric strong { display: block; color: var(--wall-ink); font-size: 1.5rem; line-height: 1.15; font-variant-numeric: tabular-nums; }
-.work-metric small { font-size: .75rem; font-weight: 500; }
-.footage-panel video { display: block; max-height: min(52vh, 550px); border-radius: 9px; }
+.metric-icon { display: grid; place-items: center; width: 35px; height: 35px; flex-shrink: 0; border-radius: 8px; background: var(--metric-bg); color: var(--metric); }
+.metric-label { color: var(--wall-muted); font-size: .75rem; }
+.work-metric strong { display: block; color: var(--wall-ink); font-size: 1.3rem; line-height: 1.15; font-variant-numeric: tabular-nums; }
+.work-metric small { font-size: .7rem; font-weight: 500; }
 progress { appearance: none; height: 6px; overflow: hidden; border: 0; border-radius: 999px; background: #e5edf4; }
 progress::-webkit-progress-bar { background: #e5edf4; }
 progress::-webkit-progress-value { background: var(--wall-accent); }
 progress::-moz-progress-bar { background: var(--wall-accent); }
-.review-panel { scroll-margin-top: 1rem; }
-.review-nav { display: flex; flex-wrap: wrap; gap: .75rem; }
-.review-nav button { display: flex; align-items: center; gap: .35rem; min-height: 42px; padding-inline: .5rem; color: var(--wall-muted); border-bottom: 2px solid transparent; font-weight: 600; }
+.review-nav { display: flex; flex-wrap: wrap; gap: .5rem; }
+.review-nav button { display: flex; align-items: center; gap: .3rem; min-height: 34px; padding-inline: .35rem; color: var(--wall-muted); border-bottom: 2px solid transparent; font-size: .8125rem; font-weight: 600; }
 .review-nav button[aria-pressed="true"] { color: var(--wall-accent-dark); border-color: var(--wall-accent); }
+@media (max-height: 820px) {
+  .wall-workspace-main { gap: .45rem; padding-block: .6rem; }
+  .workspace-hero { padding: .4rem .75rem; }
+  .workspace-hero h1 { font-size: 1.05rem; }
+  .workspace-alerts { max-height: 44px; }
+  .compact-alert { min-height: 38px; padding: .3rem .7rem; }
+  .compact-alert > p, .compact-alert > label { display: none; }
+  .workspace-taskbar { padding: .35rem .7rem; }
+  .workspace-metrics .work-metric { padding: .32rem .55rem; }
+  .workspace-metrics .metric-icon { display: none; }
+  .workspace-metrics .work-metric strong { font-size: 1rem; }
+  .workspace-metrics .metric-label { font-size: .68rem; }
+  .video-frame { min-height: 170px; }
+  .footage-controls { max-height: 36%; padding-top: .4rem; }
+  .map-frame { height: clamp(88px, 12vh, 112px); }
+  .review-head { padding-top: .4rem; }
+  .review-nav button, .review-actions .button { min-height: 30px; padding: .2rem .4rem; font-size: .72rem; }
+}
+@media (max-width: 1100px) {
+  .workspace-grid { grid-template-columns: 1fr; grid-template-rows: minmax(300px, 1fr) minmax(360px, 1fr); overflow-y: auto; }
+  .workspace-rail { min-height: 360px; }
+}
 @media (max-width: 680px) {
-  .task-meta { margin-left: 56px; }
-  .work-metrics { grid-template-columns: repeat(2, minmax(0,1fr)); gap: .5rem; }
-  .work-metric { padding: .55rem .6rem; gap: .5rem; }
-  .metric-icon { width: 31px; height: 31px; }
+  .wall-workspace-main { padding-inline: .6rem; padding-bottom: .5rem; }
+  .workspace-hero { padding: .45rem .6rem; }
+  .workspace-hero h1 { font-size: 1rem; }
+  .workspace-hero .wall-button { min-height: 34px; padding: .25rem .5rem; font-size: .75rem; }
+  .workspace-alerts { max-height: 44px; }
+  .compact-alert > p, .compact-alert > label { display: none; }
+  .task-icon { display: none; }
+  .task-picker { width: 100%; }
+  .task-meta { margin-left: 0; width: 100%; }
+  .workspace-metrics { grid-template-columns: repeat(2, minmax(0,1fr)); }
+  .workspace-metrics .metric-icon { display: none; }
+  .workspace-grid { grid-template-rows: minmax(240px, 1fr) minmax(420px, auto); }
+  .workspace-footage, .workspace-rail { padding: .5rem; }
+  .footage-head > span:last-child { display: none; }
+  .video-frame { min-height: 150px; }
+  .finding-layout { min-height: 260px; }
+  .modal-layer { padding: .5rem; }
+  .modal-card { padding: 1rem; }
 }
 </style>

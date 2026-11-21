@@ -65,20 +65,6 @@ const modules = [
         icon: Building2,
         desc: ['裂缝标注', '渗水识别'],
       },
-      {
-        name: '车辆违停巡检',
-        path: '/plate',
-        theme: 'roof',
-        icon: ScanLine,
-        desc: ['车牌识别', '违停判定'],
-      },
-      {
-        name: '车辆覆盖率检测',
-        path: '/vehicle-coverage',
-        theme: 'roof',
-        icon: CarFront,
-        desc: ['车辆表面巡检', '视点覆盖评估'],
-      },
     ],
   },
   {
@@ -143,22 +129,23 @@ const modules = [
       {
         name: '粉黛花三维漫游',
         path: '/fendai-flower',
-        theme: 'roseDigital',
+        theme: 'fendai',
         icon: Camera,
         desc: ['高斯模型', '第一人称漫游'],
       },
-    ],
-  },
-  {
-    title: '演示素材管理',
-    accent: 'bg-slate-600',
-    items: [
       {
-        name: '素材上传中心',
-        path: '/assets',
-        theme: 'roseDigital',
-        icon: HardDriveUpload,
-        desc: ['视频灌入', '模型上传'],
+        name: '车辆违停巡检',
+        path: '/plate',
+        theme: 'plate',
+        icon: ScanLine,
+        desc: ['车牌识别', '违停判定'],
+      },
+      {
+        name: '车辆覆盖率检测',
+        path: '/vehicle-coverage',
+        theme: 'coverage',
+        icon: CarFront,
+        desc: ['车辆表面巡检', '视点覆盖评估'],
       },
     ],
   },
@@ -189,15 +176,12 @@ const handleNavigation = async (path: string) => {
     <header class="w-full bg-gradient-to-r from-blue-700 to-indigo-800 shadow-md">
       <div class="mx-auto flex min-h-20 max-w-[1500px] flex-col items-start justify-center gap-2 px-4 py-4 sm:h-20 sm:flex-row sm:items-center sm:justify-between sm:px-8 sm:py-0">
         <h1 class="text-xl font-bold tracking-wide text-white sm:text-3xl sm:tracking-widest">低空智能巡检与决策平台</h1>
-        <div class="flex items-center gap-6 text-sm font-medium text-white/90 sm:text-base">
-          <span class="flex items-center gap-2"><span class="w-2.5 h-2.5 bg-emerald-400 rounded-full animate-pulse"></span> 边缘算力在线</span>
-        </div>
       </div>
     </header>
 
     <main class="mx-auto w-full max-w-[1500px] flex-1 px-4 py-4 sm:px-8 sm:py-8">
       <section class="home-account" aria-label="平台账号">
-        <div class="home-account-main"><div class="home-account-avatar"><UserRound :size="25"/></div><div class="home-account-copy"><h2>{{ account.user ? `欢迎回来，${account.user.username}` : '欢迎使用巡检平台' }}</h2><p>{{ account.user ? '选择下方业务模块，开始本次作业。' : '登录或注册账号，进入巡检业务工作台。' }}</p></div><div class="home-account-actions"><template v-if="!account.user"><button class="home-login" @click="openAccount('login')"><LogIn :size="15"/>登录</button><button class="home-register" @click="openAccount('register')"><UserPlus :size="15"/>注册</button></template><button v-else class="home-register" :disabled="signingOut" @click="logout"><LogOut :size="15"/>{{ signingOut ? '正在退出…' : '退出登录' }}</button></div></div>
+        <div class="home-account-main"><div class="home-account-avatar"><UserRound :size="25"/></div><div class="home-account-copy"><h2>{{ account.user ? `欢迎回来，${account.user.username}` : '欢迎使用巡检平台' }}</h2><p>{{ account.user ? '选择下方业务模块，开始本次作业。' : '登录或注册账号，进入巡检业务工作台。' }}</p></div><div class="home-account-actions"><button class="home-assets" @click="handleNavigation('/assets')"><HardDriveUpload :size="15"/>素材上传中心</button><template v-if="!account.user"><button class="home-login" @click="openAccount('login')"><LogIn :size="15"/>登录</button><button class="home-register" @click="openAccount('register')"><UserPlus :size="15"/>注册</button></template><button v-else class="home-register" :disabled="signingOut" @click="logout"><LogOut :size="15"/>{{ signingOut ? '正在退出…' : '退出登录' }}</button></div></div>
         <div class="home-account-hint">默认账号：<strong>admin</strong><span></span>默认密码：<strong>admin123</strong></div>
         <p v-if="accountError" class="home-account-error" role="alert">{{ accountError }}</p>
       </section>
@@ -237,5 +221,5 @@ const handleNavigation = async (path: string) => {
 
 
 <style scoped>
-.home-account{background:white;border:1px solid #e2e8f0;border-radius:10px;margin-bottom:25px;box-shadow:0 5px 20px -18px #0f172a40;padding:20px 24px;color:#475569}.home-account-main{display:flex;align-items:center;gap:14px}.home-account-avatar{height:48px;width:48px;display:grid;place-items:center;border:1px solid #dbeafe;background:linear-gradient(140deg,#eff6ff,#eef2ff);color:#4169d4;border-radius:12px;flex-shrink:0}.home-account-copy h2{font-size:16px;color:#1e293b;font-weight:650}.home-account-copy p{font-size:12px;color:#94a3b8;margin-top:6px}.home-account-actions{margin-left:auto;display:flex;gap:9px;align-items:center}.home-account-actions button{display:flex;align-items:center;justify-content:center;gap:6px;padding:9px 18px;font-size:12px;font-weight:600;border:1px solid transparent;border-radius:6px;white-space:nowrap}.home-login{background:#315bd2;color:white;box-shadow:0 3px 8px #315bd21a}.home-login:hover{background:#254bb7}.home-account-actions button.home-register{background:white;color:#526785;border-color:#dce3ef}.home-account-actions button.home-register:hover{background:#f8fafc}.home-account-actions button:disabled{opacity:.5;cursor:not-allowed}.home-account-hint{display:flex;align-items:center;gap:6px;font-size:12px;color:#64748b;border-top:1px solid #f1f5f9;margin-top:16px;padding-top:13px}.home-account-hint strong{font-family:ui-monospace,monospace;color:#334155;font-weight:500;font-size:13px}.home-account-hint>span{height:10px;width:1px;background:#e2e8f0;margin:0 9px}.home-account-error{font-size:12px;color:#be123c;margin-top:12px;line-height:1.7}@media(max-width:600px){.home-account{padding:17px;margin-bottom:17px}.home-account-main{flex-wrap:wrap;gap:12px}.home-account-avatar{height:42px;width:42px}.home-account-copy h2{font-size:14px}.home-account-copy p{font-size:11px}.home-account-actions{margin-left:0;width:100%;padding-top:2px}.home-account-actions button{flex:1}.home-account-hint{gap:3px;font-size:10px}.home-account-hint strong{font-size:11px}.home-account-hint>span{margin:0 5px}}
+.home-account{background:white;border:1px solid #e2e8f0;border-radius:10px;margin-bottom:25px;box-shadow:0 5px 20px -18px #0f172a40;padding:20px 24px;color:#475569}.home-account-main{display:flex;align-items:center;gap:14px}.home-account-avatar{height:48px;width:48px;display:grid;place-items:center;border:1px solid #dbeafe;background:linear-gradient(140deg,#eff6ff,#eef2ff);color:#4169d4;border-radius:12px;flex-shrink:0}.home-account-copy h2{font-size:16px;color:#1e293b;font-weight:650}.home-account-copy p{font-size:12px;color:#94a3b8;margin-top:6px}.home-account-actions{margin-left:auto;display:flex;gap:9px;align-items:center}.home-account-actions button{display:flex;align-items:center;justify-content:center;gap:6px;padding:9px 18px;font-size:12px;font-weight:600;border:1px solid transparent;border-radius:6px;white-space:nowrap}.home-account-actions button.home-assets{background:#f4f7ff;color:#315bd2;border-color:#dbe6ff}.home-account-actions button.home-assets:hover{background:#e8efff;border-color:#b9cdff}.home-login{background:#315bd2;color:white;box-shadow:0 3px 8px #315bd21a}.home-login:hover{background:#254bb7}.home-account-actions button.home-register{background:white;color:#526785;border-color:#dce3ef}.home-account-actions button.home-register:hover{background:#f8fafc}.home-account-actions button:disabled{opacity:.5;cursor:not-allowed}.home-account-hint{display:flex;align-items:center;gap:6px;font-size:12px;color:#64748b;border-top:1px solid #f1f5f9;margin-top:16px;padding-top:13px}.home-account-hint strong{font-family:ui-monospace,monospace;color:#334155;font-weight:500;font-size:13px}.home-account-hint>span{height:10px;width:1px;background:#e2e8f0;margin:0 9px}.home-account-error{font-size:12px;color:#be123c;margin-top:12px;line-height:1.7}@media(max-width:600px){.home-account{padding:17px;margin-bottom:17px}.home-account-main{flex-wrap:wrap;gap:12px}.home-account-avatar{height:42px;width:42px}.home-account-copy h2{font-size:14px}.home-account-copy p{font-size:11px}.home-account-actions{margin-left:0;width:100%;padding-top:2px}.home-account-actions button{flex:1}.home-account-actions button.home-assets{flex:0 0 100%}.home-account-hint{gap:3px;font-size:10px}.home-account-hint strong{font-size:11px}.home-account-hint>span{margin:0 5px}}
 .module-scroll{scrollbar-width:none;-ms-overflow-style:none}.module-scroll::-webkit-scrollbar{display:none}</style>

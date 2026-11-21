@@ -289,6 +289,24 @@ def merge(task_id: str, payload: MergeRequest, account=Depends(require_account))
     return answer({'id': payload.into})
 
 
+@router.delete('/tasks/{task_id}/findings')
+def clear_findings(task_id: str, account=Depends(require_account)):
+    """清空当前任务的全部巡检发现，并解除工单关联（工单本身保留）。"""
+    user = account['username']
+    with database(write=True) as conn:
+        task_for(conn, task_id, user, write=True)
+        evidence_names = [row[0] for row in conn.execute(
+            "SELECT evidence FROM findings WHERE task_id=? AND evidence IS NOT NULL", (task_id,))]
+        count = conn.execute('SELECT COUNT(*) FROM findings WHERE task_id=?', (task_id,)).fetchone()[0]
+        conn.execute("DELETE FROM order_findings WHERE finding_id IN (SELECT id FROM findings WHERE task_id=?)", (task_id,))
+        conn.execute('DELETE FROM findings WHERE task_id=?', (task_id,))
+        record(conn, task_id, task_id, user, 'findings_cleared', f'清空 {count} 条发现')
+    folder = ROOT / 'evidence' / task_id
+    for name in evidence_names:
+        (folder / name).unlink(missing_ok=True)
+    return answer({'deleted': count})
+
+
 @router.get('/tasks/{task_id}/findings/{finding_id}/image')
 def evidence(task_id: str, finding_id: str, account=Depends(require_account)):
     user = account['username']

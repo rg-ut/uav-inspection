@@ -103,6 +103,7 @@ export const wallWorkflow = {
     api('/tasks/' + id + '/findings/' + finding.id, 'PATCH', { state, floor, note, kind }),
   merge: (id: string, into: string, ids: string[]) =>
     api('/tasks/' + id + '/findings/merge', 'POST', { into, ids }),
+  clearFindings: (id: string) => api<{ deleted: number }>('/tasks/' + id + '/findings', 'DELETE'),
   draft: (id: string, finding_ids: string[]) => api<Order>('/tasks/' + id + '/orders', 'POST', { finding_ids }),
   order: (id: string, order: string, action: OrderAction, data: Record<string, unknown>) =>
     api<Order>('/tasks/' + id + '/orders/' + order, 'PATCH', { action, ...data }),
