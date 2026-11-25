@@ -67,6 +67,14 @@ export interface TaskDetail {
   can_manage: boolean
 }
 
+export interface FrameDetectionResult {
+  boxes: number[][]
+  detections?: { bbox: number[]; name: string; label: string }[]
+  width: number
+  height: number
+  inference_ms: number
+}
+
 export interface ModelOption { id: string; name: string; ready?: boolean; reason?: string }
 
 async function api<T>(path: string, method = 'GET', data?: unknown, signal?: AbortSignal) {
@@ -85,7 +93,7 @@ function fileForm(file: File) {
 
 export const wallWorkflow = {
   detectFrame: (task: string, model: string, image: string, sensitivity: number, signal?: AbortSignal) =>
-    api<{ boxes: number[][]; width: number; height: number; inference_ms: number }>(
+    api<FrameDetectionResult>(
       `/tasks/${task}/detect`, 'POST', { model, image, sensitivity }, signal),
   interpret: (question: string, task_id: string | null) =>
     api<{ action: 'subtitle' | 'pending' | 'seek' | 'draft'; seconds?: number } | null>(

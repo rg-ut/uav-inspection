@@ -15,6 +15,7 @@ interface LocationPoint {
 
 const props = defineProps<{
   compact?: boolean
+  fill?: boolean
   points: LocationPoint[]
   current: { latitude: number; longitude: number } | null
 }>()
@@ -26,8 +27,46 @@ let resizeObserver: ResizeObserver | null = null
 let currentMarker: L.CircleMarker | null = null
 let initialPoint = true
 const following = ref(true)
-const basemapUnavailable = ref(false)
-let tileFailures = 0
+const basemapState = ref<'loading' | 'ready' | 'unavailable'>('loading')
+let basemapTimer: number | undefined
+const basemapTimeout = 12000
+
+const basemaps = [
+  { url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+    attribution: 'Esri World Imagery', maxNativeZoom: 19 },
+  { url: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>', maxNativeZoom: 19 },
+]
+
+function loadBasemap(index = 0) {
+  if (!map) return
+  const source = basemaps[index]
+  if (!source) {
+    basemapState.value = 'unavailable'
+    return
+  }
+  const tiles = L.tileLayer(source.url, { ...source, maxZoom: 20 })
+  let loaded = false
+  const fallback = () => {
+    if (loaded || !map?.hasLayer(tiles)) return
+    clearTimeout(basemapTimer)
+    tiles.remove()
+    loadBasemap(index + 1)
+  }
+  tiles.on('tileload', () => {
+    loaded = true
+    basemapState.value = 'ready'
+    clearTimeout(basemapTimer)
+  })
+  tiles.on('loading', () => {
+    loaded = false
+    clearTimeout(basemapTimer)
+    basemapTimer = window.setTimeout(fallback, basemapTimeout)
+  })
+  // Leaflet still uses the layer after dispatching load.
+  tiles.on('load', () => queueMicrotask(fallback))
+  tiles.addTo(map)
+}
 
 function updateCurrent() {
   if (!map) return
@@ -75,7 +114,7 @@ function renderPoints() {
   for (const point of props.points) {
     const coordinate: L.LatLngTuple = [point.latitude, point.longitude]
     bounds.push(coordinate)
-    if (props.compact) continue
+    if (props.compact && (props.points.length > 1 || props.current)) continue
     L.circleMarker(coordinate, {
       radius: 7,
       color: '#ffffff',
@@ -98,16 +137,11 @@ onMounted(async () => {
   await nextTick()
   if (!containerRef.value) return
   map = L.map(containerRef.value, { zoomControl: true, attributionControl: true, zoomAnimation: false }).setView([24.8334, 102.8399], 16)
-  const tiles = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
-    maxZoom: 20,
-    attribution: 'Esri World Imagery',
-  })
-  tiles.on('tileerror', () => { if (++tileFailures >= 2) basemapUnavailable.value = true })
-  tiles.on('tileload', () => { tileFailures = 0; basemapUnavailable.value = false })
-  tiles.addTo(map)
+  loadBasemap()
+  L.control.scale({ imperial: false, maxWidth: 80 }).addTo(map)
   overlay = L.layerGroup().addTo(map)
   map.on('dragstart', () => { following.value = false })
-  resizeObserver = new ResizeObserver(() => map?.invalidateSize({ pan: false }))
+  resizeObserver = new ResizeObserver(() => map?.invalidateSize({ pan: false, debounceMoveend: true }))
   resizeObserver.observe(containerRef.value)
   renderPoints()
 })
@@ -116,6 +150,7 @@ watch(() => props.points, renderPoints, { deep: true })
 watch(() => props.current, updateCurrent)
 
 onUnmounted(() => {
+  clearTimeout(basemapTimer)
   resizeObserver?.disconnect()
   resizeObserver = null
   map?.stop()
@@ -125,9 +160,11 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="relative">
-    <div ref="containerRef" class="w-full bg-slate-100" :class="compact ? 'h-56' : 'min-h-[540px]'"></div>
-    <p v-if="compact && basemapUnavailable" class="absolute left-2 top-2 z-[500] ml-9 rounded bg-white px-2 py-1 text-xs">底图暂不可用</p>
+  <div class="relative w-full" :class="{ 'h-full': fill }">
+    <div ref="containerRef" class="w-full" :class="fill ? 'h-full' : compact ? 'h-56' : 'min-h-[540px]'" aria-label="拍摄位置地图"></div>
+    <p v-if="basemapState !== 'ready'" role="status" class="absolute left-2 top-2 z-[500] ml-9 rounded bg-white px-2 py-1 text-xs">
+      {{ basemapState === 'loading' ? '正在加载底图' : '底图暂不可用 · 显示拍摄轨迹' }}
+    </p>
     <button v-if="compact && !following && current" type="button"
       class="absolute bottom-5 right-2 z-[500] rounded border border-slate-300 bg-white px-2 py-1 text-xs"
       @click="follow">回到无人机位置</button>
@@ -137,5 +174,8 @@ onUnmounted(() => {
 <style scoped>
 :deep(.leaflet-container) {
   font-family: "Microsoft YaHei", sans-serif;
+  background-color: #e8f0f0;
+  background-image: linear-gradient(#cbdcde 1px, transparent 1px), linear-gradient(90deg, #cbdcde 1px, transparent 1px);
+  background-size: 24px 24px;
 }
 </style>

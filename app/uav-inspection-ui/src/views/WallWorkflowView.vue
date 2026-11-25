@@ -4,11 +4,12 @@ import { ArrowLeft, Building2, CircleCheck, ClipboardCheck, FileDown, Film, List
 import { useRoute } from 'vue-router'
 import WallWorkspaceHeader from '../components/wall/WallWorkspaceHeader.vue'
 import '../components/wall/wallWorkspace.css'
+import WallDetectionOverlay from '../components/wall/WallDetectionOverlay.vue'
 import WallLocationMap from '../components/wall/WallLocationMap.vue'
 import WallWorkOrder from '../components/wall/WallWorkOrder.vue'
 import { findTelemetry, parseSrt, type TelemetryFrame } from '../utils/srtParser'
 import { webPath } from '../utils/webroot'
-import { uploadInspection, wallError, wallWorkflow, type CountKey, type Finding, type FindingState,
+import { uploadInspection, wallError, wallWorkflow, type CountKey, type Finding, type FindingState, type FrameDetectionResult,
   type ModelOption, type OrderAction, type Task, type TaskDetail } from '../api1/wallWorkflow'
 
 const route = useRoute()
@@ -42,7 +43,7 @@ const model = ref('')
 const canUploadModel = ref(false)
 const modelUploadHint = ref('')
 const selectedModel = computed(() => models.value.find(item => item.id === model.value))
-const preview = ref<{ boxes: number[][]; width: number; height: number; inference_ms: number } | null>(null)
+const preview = ref<FrameDetectionResult | null>(null)
 const previewError = ref('')
 const previewBusy = ref(false)
 let previewEpoch = 0
@@ -110,6 +111,7 @@ const findingView = ref<'list' | 'detail'>('list')
 const reviewPanel = ref<HTMLElement>()
 
 const labels: Record<FindingState, string> = { pending: '待复核', confirmed: '已确认', dismissed: '已排除', merged: '已合并' }
+const orderLabels = { draft: '草稿', assigned: '待接单', in_progress: '维修中', review: '待验收', completed: '已完成', cancelled: '已取消' }
 const kindLabels: Record<string, string> = { Crack: '裂缝', Seepage: '渗水', TileSpalling: '面砖脱落' }
 const cards = [
   { key: 'pending', label: '疑似待复核', icon: SearchCheck },
@@ -121,7 +123,7 @@ const runStates = { queued: '等待分析', running: '正在分析', completed: 
 const run = computed(() => current.value?.runs[0])
 const analyzing = computed(() => run.value?.state === 'running' || run.value?.state === 'queued')
 const currentFinding = computed(() => current.value?.findings.find(item => item.id === findingId.value))
-const order = computed(() => current.value?.orders.find(item => item.id === orderId.value) || current.value?.orders[0])
+const order = computed(() => current.value?.orders.find(item => item.id === orderId.value))
 const manager = computed(() => current.value?.can_manage ?? false)
 const telemetry = computed(() => {
   const at = videoTime.value - (current.value?.task.offset || 0)
@@ -459,25 +461,23 @@ async function ask(text = prompt.value, useProvider = true): Promise<void> {
         <p v-if="notice" class="rounded-md bg-teal-50 text-teal-900" role="status">{{ notice }}</p>
       </div>
 
-      <section class="wall-panel task-bar workspace-taskbar">
-        <span class="task-icon"><Building2 :size="22" /></span>
-        <label class="task-picker text-sm font-semibold">当前任务
-          <select v-model="taskId" class="field" :disabled="busy || !tasks.length">
-            <option value="" disabled>{{ loading ? '正在加载' : '请选择任务' }}</option>
-            <option v-for="item in tasks" :key="item.id" :value="item.id">{{ item.name }} · {{ item.building }} {{ item.facade }}</option>
+      <div class="workspace-summary">
+        <section class="wall-panel task-bar">
+          <span class="task-icon"><Building2 :size="19" /></span>
+          <label for="wall-task" class="task-label">当前任务</label>
+          <select id="wall-task" v-model="taskId" class="field task-picker" :disabled="busy || !tasks.length">
+              <option value="" disabled>{{ loading ? '正在加载' : '请选择任务' }}</option>
+              <option v-for="item in tasks" :key="item.id" :value="item.id">{{ item.name }} · {{ item.building }} {{ item.facade }}</option>
           </select>
-        </label>
-        <div v-if="current" class="task-meta">
-          <span class="wall-status" :data-tone="run?.state === 'completed' ? 'green' : analyzing ? 'blue' : run?.state === 'failed' ? 'red' : undefined">
-            <span class="status-dot"></span>{{ run ? runStates[run.state] : '待检测' }}
-          </span>
-          <span v-if="current.task.duration">{{ time(current.task.duration) }} 录像</span>
-        </div>
-        <p v-if="!tasks.length && !loading" class="text-sm text-slate-600">还没有巡检任务。上传一段外墙视频即可开始。</p>
-      </section>
+          <div v-if="current" class="task-meta">
+            <span class="wall-status" :data-tone="run?.state === 'completed' ? 'green' : analyzing ? 'blue' : run?.state === 'failed' ? 'red' : undefined">
+              <span class="status-dot"></span>{{ run ? runStates[run.state] : '待检测' }}
+            </span>
+          </div>
+          <p v-if="!tasks.length && !loading" class="text-sm text-slate-600">还没有巡检任务。上传一段外墙视频即可开始。</p>
+        </section>
 
-      <template v-if="current">
-        <section v-if="current.counts" aria-label="当前任务统计" class="work-metrics workspace-metrics">
+        <section v-if="current?.counts" aria-label="当前任务统计" class="work-metrics">
           <button v-for="card in cards" :key="card.key" class="wall-panel work-metric" :data-kind="card.key"
             :aria-pressed="tab === 'findings' && filter === card.key" @click="changeFilter(card.key, true)">
             <span class="metric-icon"><component :is="card.icon" :size="20" /></span>
@@ -486,20 +486,20 @@ async function ask(text = prompt.value, useProvider = true): Promise<void> {
             </span>
           </button>
         </section>
+      </div>
 
+      <template v-if="current">
         <div class="workspace-grid">
           <section class="wall-panel panel footage-panel workspace-footage">
             <div class="footage-head">
-              <div><h2 class="wall-panel-title flex items-center gap-2"><Film :size="19" /> 巡检录像</h2><p class="mt-1 text-sm text-slate-600">{{ current.task.name }}</p></div>
+              <h2 class="wall-panel-title"><Film :size="18" /> 巡检录像</h2>
               <span class="flex items-center gap-1 text-sm text-slate-600"><MapPin :size="15" /> {{ current.task.building }} · {{ current.task.facade }}</span>
             </div>
             <div class="video-frame relative">
               <video :key="current.task.id" ref="video" :src="current.task.video_url" controls playsinline preload="metadata"
                 class="workspace-video"
                 @timeupdate="videoTime = video?.currentTime || 0" @seeking="clearPreview" @seeked="videoTime = video?.currentTime || 0" @pause="clearPreview" @play="detectPlayback" @error="videoError = true; clearPreview()" />
-              <svg v-if="preview" class="pointer-events-none absolute inset-0 h-full w-full" :viewBox="`0 0 ${preview.width} ${preview.height}`" preserveAspectRatio="xMidYMid slice" aria-label="当前画面检测框">
-                <rect v-for="(box, index) in preview.boxes" :key="index" :x="box[0]" :y="box[1]" :width="(box[2] || 0) - (box[0] || 0)" :height="(box[3] || 0) - (box[1] || 0)" fill="none" stroke="#facc15" stroke-width="2" vector-effect="non-scaling-stroke" />
-              </svg>
+              <WallDetectionOverlay v-if="preview" :frame="preview" />
             </div>
             <div class="footage-controls">
               <div v-if="manager" class="control-row">
@@ -507,7 +507,6 @@ async function ask(text = prompt.value, useProvider = true): Promise<void> {
                 <span v-else>{{ previewBusy ? '正在分析画面…' : '播放视频后逐帧检测' }}</span>
               </div>
               <p v-if="previewError" class="text-red-800" role="alert">{{ previewError }}</p>
-              <p class="text-slate-600">按服务器速度抽帧显示检测框；点击“开始检测”可生成完整分析记录与工单依据。</p>
               <p v-if="videoError" class="text-red-800">浏览器无法播放这个文件。请尝试使用 MP4 格式的视频。</p>
               <div v-if="manager" class="control-stack">
                 <div v-if="run" class="text-slate-700">
@@ -518,7 +517,7 @@ async function ask(text = prompt.value, useProvider = true): Promise<void> {
                 <div v-if="analyzing && run">
                   <button class="button" :disabled="busy" @click="act(async () => { await wallWorkflow.cancel(taskId, run!.id); await refresh() }, '已停止分析。')">停止分析</button>
                 </div>
-                <details v-else class="rounded-md border border-slate-200 px-3 py-2">
+                <details v-else class="detection-settings">
                   <summary class="cursor-pointer font-semibold"><SlidersHorizontal :size="15" class="mr-1 inline-block align-[-2px]" />检测设置</summary>
                   <div class="mt-2 grid gap-2 sm:grid-cols-2">
                     <label>检测模型<select v-model="model" class="field"><option value="" disabled>请选择模型</option><option v-for="option in models" :key="option.id" :value="option.id">{{ option.name }}</option></select></label>
@@ -529,6 +528,11 @@ async function ask(text = prompt.value, useProvider = true): Promise<void> {
                     <label>重叠框合并阈值<input v-model.number="iou" type="number" step="0.05" min="0.05" max="0.95" class="field" /></label>
                     <label v-if="canUploadModel" class="sm:col-span-2">添加模型（640×640 单类别 YOLO ONNX）<input type="file" accept=".onnx" class="field" :disabled="busy" @change="uploadModel" /></label>
                   </div>
+                  <form v-if="current.task.subtitle_url" class="offset-form" @submit.prevent="saveOffset(subtitleOffset)">
+                    <label>字幕延后秒数<input v-model.number="subtitleOffset" type="number" step="0.1" class="field" /></label>
+                    <button class="button" :disabled="busy">保存</button>
+                    <button type="button" class="button" :disabled="busy" @click="saveOffset(0)">恢复</button>
+                  </form>
                 </details>
                 <button v-if="!analyzing" class="primary" :disabled="busy || !model || selectedModel?.ready === false"
                   @click="act(async () => { await wallWorkflow.run(taskId, model, sensitivity, mode, iou); await refresh() }, '分析已开始，可继续查看视频。')">开始检测</button>
@@ -539,29 +543,23 @@ async function ask(text = prompt.value, useProvider = true): Promise<void> {
 
           <section class="wall-panel panel workspace-rail">
             <div class="rail-flight">
-              <h2 class="rail-title"><MapPin :size="18" /> 飞行数据</h2>
-              <div v-if="routePoints.length" class="map-frame">
-                <WallLocationMap :points="routePoints" :current="currentPoint" compact />
+              <h2 class="rail-title"><MapPin :size="17" /> 拍摄位置</h2>
+              <div class="map-frame">
+                <WallLocationMap v-if="routePoints.length || currentPoint" :points="routePoints" :current="currentPoint" compact fill />
+                <p v-else class="map-empty">{{ telemetryError ? '飞行字幕读取失败' : current.task.subtitle_url ? '字幕没有可用经纬度' : '暂无定位字幕' }}</p>
               </div>
-              <dl v-if="currentPoint" class="telemetry-grid">
-                <div><dt>拍摄位置 · 经纬度</dt><dd class="font-mono">{{ currentPoint.longitude.toFixed(6) }}, {{ currentPoint.latitude.toFixed(6) }}</dd></div>
-                <div><dt>相对起飞点高度</dt><dd>{{ telemetry?.altitudeAvailable && Number.isFinite(telemetry.relAlt) ? telemetry.relAlt.toFixed(1) + ' 米' : '—' }}</dd></div>
-                <div><dt>飞行速度</dt><dd>{{ telemetry?.speed !== undefined && Number.isFinite(telemetry.speed) ? telemetry.speed.toFixed(1) + ' 米/秒' : '—' }}</dd></div>
-                <div><dt>视频时间</dt><dd>{{ time(videoTime) }}</dd></div>
+              <dl class="telemetry-grid">
+                <div><dt>经度</dt><dd>{{ currentPoint?.longitude.toFixed(6) ?? '—' }}</dd></div>
+                <div><dt>纬度</dt><dd>{{ currentPoint?.latitude.toFixed(6) ?? '—' }}</dd></div>
+                <div><dt>相对起飞高度</dt><dd>{{ telemetry?.altitudeAvailable && Number.isFinite(telemetry.relAlt) ? telemetry.relAlt.toFixed(1) + ' 米' : '—' }}</dd></div>
               </dl>
-              <p v-else class="mt-2 text-sm text-slate-600">{{ telemetryError ? '字幕暂时无法读取。' : !current.task.subtitle_url ? '暂无字幕数据。' : '当前画面没有可用的定位数据。' }}</p>
-              <form v-if="manager && current.task.subtitle_url" class="offset-form" @submit.prevent="saveOffset(subtitleOffset)">
-                <label>字幕延后秒数<input v-model.number="subtitleOffset" type="number" step="0.1" class="field" /></label>
-                <button class="button" :disabled="busy">保存</button>
-                <button type="button" class="button" :disabled="busy" @click="saveOffset(0)">恢复</button>
-              </form>
             </div>
 
             <section ref="reviewPanel" class="review-panel">
               <div class="review-head">
                 <div class="review-nav">
                   <button :aria-pressed="tab === 'findings'" @click="tab = 'findings'; findingView = 'list'"><ListChecks :size="17" /> 巡检记录</button>
-                  <button :aria-pressed="tab === 'orders'" @click="tab = 'orders'"><Wrench :size="17" /> 维修工单</button>
+                  <button :aria-pressed="tab === 'orders'" @click="tab = 'orders'; orderId = ''"><Wrench :size="17" /> 维修工单</button>
                 </div>
                 <div v-if="manager" class="review-actions">
                   <a class="button" :href="webPath('/api/v1/wall/workflow/tasks/' + taskId + '/export')"><FileDown :size="16" /> 导出明细</a>
@@ -583,13 +581,13 @@ async function ask(text = prompt.value, useProvider = true): Promise<void> {
                     <div class="mt-2 flex gap-2"><button class="primary" :disabled="busy || !mayDraft" @click="draft">确认生成草稿</button><button class="button" @click="draftPreview = false">返回</button></div>
                   </div>
                   <div class="finding-layout" :data-view="findingView">
-                    <ul v-show="findingView === 'list'" class="finding-list divide-y divide-slate-200">
-                      <li v-for="finding in visibleFindings" :key="finding.id" class="flex items-center gap-2 py-1.5">
+                    <ul v-show="findingView === 'list'" class="record-list divide-y divide-slate-200" aria-label="巡检记录列表">
+                      <li v-for="finding in visibleFindings" :key="finding.id" class="record-row flex items-center gap-2">
                         <input v-if="manager && ['pending','confirmed'].includes(finding.state)" v-model="selected" type="checkbox" :value="finding.id"
                           :aria-label="'选择 ' + time(finding.evidence_time) + ' 的记录'" class="size-4 shrink-0 accent-teal-700" />
                         <button class="flex min-w-0 flex-1 items-center gap-2 rounded-md p-1 text-left hover:bg-slate-50" @click="openFinding(finding)">
-                          <img v-if="finding.image_url" :src="finding.image_url" alt="" loading="lazy" class="h-10 w-14 shrink-0 rounded bg-slate-100 object-cover" />
-                          <span class="min-w-0 flex-1"><span class="block truncate text-xs font-medium">{{ kindLabels[finding.kind] || '缺陷' }} · {{ time(finding.evidence_time) }} · {{ finding.floor || '楼层待核实' }}</span><span class="block truncate text-xs text-slate-600">{{ labels[finding.state] }}<template v-if="finding.zone"> · {{ finding.zone }}</template></span></span>
+                          <img v-if="finding.image_url" :src="finding.image_url" alt="" loading="lazy" class="h-8 w-12 shrink-0 rounded bg-slate-100 object-cover" />
+                          <span class="min-w-0 flex-1"><span class="block truncate text-sm font-medium">{{ kindLabels[finding.kind] || '缺陷' }} · {{ time(finding.evidence_time) }} · {{ finding.floor || '楼层待核实' }}</span><span class="block truncate text-xs text-slate-600">{{ labels[finding.state] }}<template v-if="finding.zone"> · {{ finding.zone }}</template></span></span>
                         </button>
                       </li>
                       <li v-if="!visibleFindings.length" class="py-4 text-xs text-slate-600">{{ !run && !current.findings.length ? '还未检测。' : run?.state === 'completed' && !current.findings.length ? '本次已检测画面未发现疑似缺陷。' : '暂无符合条件的记录。' }}</li>
@@ -612,16 +610,22 @@ async function ask(text = prompt.value, useProvider = true): Promise<void> {
                   </div>
                 </template>
                 <template v-else>
-                  <div class="order-scroll">
-                    <label v-if="current.orders.length > 1" class="block text-sm">选择工单
-                      <select class="field" :value="order?.id" @change="orderId = ($event.target as HTMLSelectElement).value">
-                        <option v-for="item in current.orders" :key="item.id" :value="item.id">{{ item.id.slice(0, 8) }} · {{ item.finding_ids.length }} 处缺陷</option>
-                      </select>
-                    </label>
-                    <WallWorkOrder v-if="order" :order="order" :findings="current.findings" :manager="manager" :busy="busy"
+                  <div v-if="order" class="order-scroll">
+                    <button type="button" class="button mb-2" @click="orderId = ''"><ArrowLeft :size="14" /> 返回工单列表</button>
+                    <WallWorkOrder :order="order" :findings="current.findings" :manager="manager" :busy="busy"
                       @update="orderAction" @photo="orderPhoto" @seek="seek" />
-                    <p v-else class="text-sm text-slate-600">暂无维修工单。</p>
                   </div>
+                  <ul v-else class="record-list order-list divide-y divide-slate-200" aria-label="维修工单列表">
+                    <li v-for="item in current.orders" :key="item.id" class="record-row">
+                      <button class="order-row" type="button" @click="orderId = item.id">
+                        <span class="min-w-0"><strong class="block truncate text-sm">工单 {{ item.id.slice(0, 8) }} · {{ item.finding_ids.length }} 处</strong>
+                          <span v-if="item.assignee" class="block truncate text-xs text-slate-600">{{ item.assignee }}<template v-if="item.due_on"> · {{ item.due_on }} 截止</template></span>
+                        </span>
+                        <span class="wall-status" :data-tone="item.state === 'completed' ? 'green' : item.state === 'draft' ? undefined : 'blue'">{{ orderLabels[item.state] }}</span>
+                      </button>
+                    </li>
+                    <li v-if="!current.orders.length" class="py-4 text-sm text-slate-600">暂无维修工单。</li>
+                  </ul>
                 </template>
               </div>
             </section>
@@ -687,61 +691,67 @@ async function ask(text = prompt.value, useProvider = true): Promise<void> {
 }
 .wall-workspace-main {
   display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0;
-  max-width: none; gap: .7rem; padding-block: .85rem;
-  padding-inline: clamp(.75rem, 2vw, 1.5rem); overflow: hidden;
+  max-width: none; gap: .5rem; padding-block: .55rem;
+  padding-inline: clamp(.65rem, 1.45vw, 1.35rem); overflow-y: auto;
 }
-.workspace-hero { flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: .5rem; padding: .6rem .9rem; border-radius: 12px; }
-.workspace-hero h1 { font-size: 1.2rem; }
-.workspace-alerts { flex: 0 0 auto; display: flex; flex-direction: column; gap: .35rem; max-height: 112px; overflow-y: auto; }
-.workspace-alerts p { margin: 0; padding: .4rem .7rem; border-radius: 8px; font-size: .8125rem; }
-.compact-alert { display: flex; flex-wrap: wrap; align-items: center; gap: .3rem .75rem; padding: .5rem .8rem; font-size: .8125rem; }
+.workspace-hero { flex: 0 0 auto; align-items: center; gap: .5rem; padding: .4rem .75rem; border-radius: 10px; }
+.workspace-hero h1 { font-size: 1.12rem; }
+.workspace-hero .wall-button { min-height: 34px; padding-block: .24rem; }
+.workspace-alerts { flex: 0 0 auto; display: flex; flex-direction: column; gap: .3rem; max-height: 100px; overflow-y: auto; }
+.workspace-alerts:empty { display: none; }
+.workspace-alerts p { margin: 0; padding: .35rem .65rem; border-radius: 8px; font-size: .8125rem; }
+.compact-alert { display: flex; flex-wrap: wrap; align-items: center; gap: .3rem .65rem; padding: .45rem .7rem; font-size: .8125rem; }
 .compact-alert h2 { margin: 0; font-size: .88rem; white-space: nowrap; }
-.compact-alert > p { flex: 1 1 320px; margin: 0; }
-.compact-alert > label { flex: 1 1 320px; margin: 0; }
+.compact-alert > p, .compact-alert > label { flex: 1 1 320px; margin: 0; }
 .compact-alert > label input { min-height: 32px; }
 .alert-actions { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem; margin-left: auto; }
-.workspace-taskbar { flex: 0 0 auto; padding: .55rem .85rem; }
-.workspace-metrics { flex: 0 0 auto; gap: .5rem; }
-.workspace-metrics .work-metric { padding: .5rem .7rem; }
-.workspace-metrics .work-metric strong { font-size: 1.15rem; }
-.workspace-metrics .metric-icon { width: 32px; height: 32px; }
+.workspace-summary { flex: 0 0 auto; display: flex; flex-wrap: wrap; gap: .5rem; }
 .workspace-grid {
-  --rail-width: clamp(360px, 30vw, 480px);
-  flex: 1; min-width: 0; min-height: 0; display: grid;
-  grid-template-columns: minmax(0, 1fr) var(--rail-width);
-  gap: .8rem; overflow: hidden;
+  flex: 1 0 540px; min-width: 0; min-height: 0; display: grid;
+  grid-template-rows: minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr) clamp(370px, 34vw, 540px);
+  gap: .65rem;
 }
-.workspace-footage, .workspace-rail { min-width: 0; padding: .7rem .85rem; display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
-.footage-head { flex: 0 0 auto; display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: .5rem; }
-.video-frame { flex: 1; min-width: 0; min-height: 180px; overflow: hidden; border-radius: 10px; background: #0b1624; }
-.workspace-video { display: block; width: 100%; max-width: 100%; height: 100%; object-fit: cover; background: #0b1624; }
-.footage-controls { flex: 0 1 auto; min-height: 0; max-height: 42%; overflow-y: auto; padding-top: .5rem; font-size: .8125rem; }
-.control-row { display: flex; flex-wrap: wrap; align-items: center; gap: .9rem; }
-.control-stack { display: flex; flex-direction: column; gap: .5rem; }
+.workspace-footage, .workspace-rail { min-width: 0; min-height: 0; padding: .6rem .75rem; display: flex; flex-direction: column; overflow: hidden; }
+.footage-head { flex: 0 0 auto; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: .35rem; margin-bottom: .45rem; }
+.video-frame { flex: 1; min-width: 0; min-height: 250px; overflow: hidden; border-radius: 8px; background: #0b1624; }
+.workspace-video { position: absolute; inset: 0; display: block; width: 100%; height: 100%; object-fit: contain; }
+.footage-controls { flex: 0 1 auto; min-height: 0; max-height: 37%; overflow-y: auto; padding-top: .4rem; font-size: .8125rem; }
+.control-row { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; min-height: 22px; color: var(--wall-muted); }
+.control-stack { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem; }
 .control-stack p { margin: 0; }
-.rail-flight { flex: 0 0 auto; min-width: 0; max-height: 34vh; overflow-y: auto; padding-bottom: .45rem; }
+.control-stack > div:first-child:has(progress) { flex: 1 1 225px; }
+.detection-settings { padding: .38rem .55rem; border: 1px solid var(--wall-line); border-radius: 7px; }
+.detection-settings[open] { flex: 1 0 100%; }
+.rail-flight { flex: 0 0 auto; min-width: 0; padding-bottom: .45rem; }
 .rail-title, .wall-panel-title { display: flex; align-items: center; gap: .4rem; font-size: .95rem; font-weight: 700; }
-.map-frame { height: clamp(100px, 16vh, 148px); margin-top: .45rem; overflow: hidden; border: 1px solid var(--wall-line); border-radius: 8px; }
-.map-frame :deep(.h-56) { height: 100% !important; }
-.telemetry-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .35rem .5rem; margin-top: .5rem; font-size: .75rem; }
-.telemetry-grid > div:first-child { grid-column: 1 / -1; }
-.telemetry-grid dt { color: var(--wall-muted); }
+.map-frame { height: clamp(100px, 15vh, 150px); margin-top: .35rem; overflow: hidden; border: 1px solid var(--wall-line); border-radius: 8px; }
+.map-empty { display: grid; height: 100%; place-items: center; background: #eef4f7; color: var(--wall-muted); font-size: .8125rem; }
+.telemetry-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .25rem .45rem; margin-top: .4rem; font-size: .8125rem; }
+.telemetry-grid dt { color: var(--wall-muted); font-size: .75rem; }
 .telemetry-grid dd { margin: 0; font-variant-numeric: tabular-nums; }
-.offset-form { display: flex; flex-wrap: wrap; align-items: flex-end; gap: .4rem; margin-top: .5rem; font-size: .75rem; }
+.offset-form { display: flex; flex-wrap: wrap; align-items: flex-end; gap: .35rem; margin-top: .55rem; }
 .review-panel { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; border-top: 1px solid var(--wall-line); overflow: hidden; }
-.review-head { flex: 0 0 auto; min-width: 0; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: .4rem; padding-top: .55rem; }
-.review-actions { display: flex; flex-wrap: wrap; gap: .35rem; }
+.review-head { flex: 0 0 auto; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: .35rem; padding-top: .3rem; }
+.review-actions { display: flex; flex-wrap: wrap; gap: .3rem; }
 .review-body { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
-.review-tools { flex: 0 0 auto; display: flex; flex-wrap: wrap; align-items: flex-end; gap: .4rem; padding-top: .4rem; font-size: .75rem; }
+.review-tools { flex: 0 0 auto; display: flex; flex-wrap: wrap; align-items: center; gap: .35rem; padding-top: .35rem; font-size: .8125rem; }
+.review-tools label { display: flex; align-items: center; gap: .3rem; flex-shrink: 0; }
+.review-tools .field { width: auto; max-width: 9rem; margin-top: 0; }
+.review-actions .button, .review-tools .button, .review-tools .primary, .review-tools .field { min-height: 31px; padding: .2rem .45rem; }
 .draft-preview { flex: 0 0 auto; margin-top: .4rem; padding: .5rem .65rem; border: 1px solid #99d6c7; border-radius: 8px; background: #f0faf6; font-size: .8125rem; }
-.finding-layout { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; padding-top: .45rem; overflow: hidden; }
-.finding-list, .finding-detail, .order-scroll { min-height: 0; overflow-y: auto; border: 1px solid var(--wall-line); border-radius: 8px; }
-.finding-list { flex: 1; padding: 0 .5rem; }
-.finding-detail { flex: 1; padding: .5rem; }
+.finding-layout { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; margin-top: .4rem; overflow: hidden; }
+.record-list, .finding-detail, .order-scroll { min-height: 0; overflow-y: auto; border: 1px solid var(--wall-line); border-radius: 8px; }
+.record-list { flex: 1; padding: 0 .48rem; }
+.record-row { min-height: 44px; }
+.order-list, .order-scroll { margin-top: .4rem; }
+.order-row { width: 100%; min-height: 43px; display: flex; align-items: center; justify-content: space-between; gap: .6rem; padding: .2rem .35rem; text-align: left; }
+.order-row:hover { background: #f4f8fb; }
+.order-row .wall-status { flex-shrink: 0; }
+.finding-detail, .order-scroll { flex: 1; padding: .5rem; }
 .detail-head { display: flex; align-items: center; margin-bottom: .45rem; }
 .finding-detail img { max-height: 200px; }
-.order-scroll { flex: 1; padding: .5rem; }
-.modal-layer { position: absolute; inset: 0; z-index: 2000; display: flex; align-items: center; justify-content: center; padding: 1.5rem; background: #0b1f2e78; }
+.modal-layer { position: fixed; inset: 0; z-index: 2000; display: flex; align-items: center; justify-content: center; padding: 1.5rem; background: #0b1f2e78; }
 .modal-card { width: min(760px, 100%); max-height: 80vh; max-height: 80dvh; overflow-y: auto; border-radius: 14px; background: #fff; padding: 1.25rem; box-shadow: 0 18px 48px #0b1f2e40; }
 .modal-card--assistant { width: min(560px, 100%); }
 .modal-card--confirm { width: min(440px, 100%); }
@@ -762,20 +772,22 @@ async function ask(text = prompt.value, useProvider = true): Promise<void> {
 .button:hover { background: #f1f6fa; border-color: #7f9aab; }
 .primary { color: white; background: var(--wall-accent); border-color: var(--wall-accent); }
 .primary:hover:not(:disabled) { background: var(--wall-accent-dark); }
-.task-bar { display: flex; flex-wrap: wrap; align-items: center; gap: .85rem; }
-.task-icon { display: grid; place-items: center; flex-shrink: 0; width: 38px; height: 38px; border-radius: 8px; background: #e8f1f7; color: #315a77; }
-.task-picker { width: min(480px, 100% - 56px); }
-.task-meta { display: flex; flex-wrap: wrap; align-items: center; gap: .65rem; margin-left: auto; color: var(--wall-muted); font-size: .8125rem; }
+.task-bar { flex: 1 1 400px; min-width: 0; display: flex; flex-wrap: wrap; align-items: center; gap: .45rem; padding: .35rem .55rem; }
+.task-icon { display: grid; place-items: center; flex-shrink: 0; width: 31px; height: 31px; border-radius: 6px; background: #e8f1f7; color: #315a77; }
+.task-label { font-size: .8125rem; font-weight: 700; white-space: nowrap; }
+.field.task-picker { flex: 1; min-width: 0; margin: 0; min-height: 32px; padding-block: .2rem; font-size: .875rem; }
+.task-meta { flex-shrink: 0; }
 .status-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
-.work-metrics { display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap: .75rem; }
-.work-metric { --metric: #315a77; --metric-bg: #e8f2fc; display: flex; align-items: center; min-width: 0; gap: .7rem; padding: .7rem .85rem; border-left: 3px solid var(--metric); text-align: left; }
+.work-metrics { flex: 1 1 508px; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: .45rem; }
+.work-metric { --metric: #315a77; --metric-bg: #e8f2fc; display: flex; align-items: center; min-width: 0; gap: .45rem; padding: .35rem .5rem; border-left: 3px solid var(--metric); text-align: left; }
 .work-metric[data-kind="pending"] { --metric: #8c510c; --metric-bg: #fff2d9; }
 .work-metric[data-kind="assigned"] { --metric: #57538d; --metric-bg: #efecfb; }
 .work-metric[data-kind="completed"] { --metric: #126749; --metric-bg: #e3f5eb; }
 .work-metric:hover, .work-metric[aria-pressed="true"] { background: var(--metric-bg); }
-.metric-icon { display: grid; place-items: center; width: 35px; height: 35px; flex-shrink: 0; border-radius: 8px; background: var(--metric-bg); color: var(--metric); }
-.metric-label { color: var(--wall-muted); font-size: .75rem; }
-.work-metric strong { display: block; color: var(--wall-ink); font-size: 1.3rem; line-height: 1.15; font-variant-numeric: tabular-nums; }
+.metric-icon { display: grid; place-items: center; width: 30px; height: 30px; flex-shrink: 0; border-radius: 8px; background: var(--metric-bg); color: var(--metric); }
+.work-metric > span:last-child { display: grid; gap: .12rem; }
+.metric-label { color: var(--wall-muted); font-size: .75rem; line-height: 1.15; }
+.work-metric strong { display: block; color: var(--wall-ink); font-size: 1.13rem; line-height: 1.1; font-variant-numeric: tabular-nums; }
 .work-metric small { font-size: .7rem; font-weight: 500; }
 progress { appearance: none; height: 6px; overflow: hidden; border: 0; border-radius: 999px; background: #e5edf4; }
 progress::-webkit-progress-bar { background: #e5edf4; }
@@ -784,45 +796,25 @@ progress::-moz-progress-bar { background: var(--wall-accent); }
 .review-nav { display: flex; flex-wrap: wrap; gap: .5rem; }
 .review-nav button { display: flex; align-items: center; gap: .3rem; min-height: 34px; padding-inline: .35rem; color: var(--wall-muted); border-bottom: 2px solid transparent; font-size: .8125rem; font-weight: 600; }
 .review-nav button[aria-pressed="true"] { color: var(--wall-accent-dark); border-color: var(--wall-accent); }
-@media (max-height: 820px) {
-  .wall-workspace-main { gap: .45rem; padding-block: .6rem; }
-  .workspace-hero { padding: .4rem .75rem; }
-  .workspace-hero h1 { font-size: 1.05rem; }
-  .workspace-alerts { max-height: 44px; }
-  .compact-alert { min-height: 38px; padding: .3rem .7rem; }
-  .compact-alert > p, .compact-alert > label { display: none; }
-  .workspace-taskbar { padding: .35rem .7rem; }
-  .workspace-metrics .work-metric { padding: .32rem .55rem; }
-  .workspace-metrics .metric-icon { display: none; }
-  .workspace-metrics .work-metric strong { font-size: 1rem; }
-  .workspace-metrics .metric-label { font-size: .68rem; }
-  .video-frame { min-height: 170px; }
-  .footage-controls { max-height: 36%; padding-top: .4rem; }
-  .map-frame { height: clamp(88px, 12vh, 112px); }
-  .review-head { padding-top: .4rem; }
-  .review-nav button, .review-actions .button { min-height: 30px; padding: .2rem .4rem; font-size: .72rem; }
+@media (min-width: 1021px) {
+  .wall-workspace-shell :deep(.wall-header-inner) { min-height: 52px; }
 }
-@media (max-width: 1100px) {
-  .workspace-grid { grid-template-columns: 1fr; grid-template-rows: minmax(300px, 1fr) minmax(360px, 1fr); overflow-y: auto; }
-  .workspace-rail { min-height: 360px; }
+@media (max-width: 1020px) {
+  .workspace-grid { flex: 0 0 auto; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto auto; }
+  .video-frame { flex: 0 0 auto; min-height: 0; aspect-ratio: 16 / 9; max-height: 62vh; }
+  .workspace-rail { min-height: 535px; max-height: 680px; }
+  .footage-controls { max-height: none; }
 }
 @media (max-width: 680px) {
-  .wall-workspace-main { padding-inline: .6rem; padding-bottom: .5rem; }
-  .workspace-hero { padding: .45rem .6rem; }
+  .wall-workspace-main { padding-inline: .55rem; }
+  .workspace-hero { padding: .35rem .55rem; }
   .workspace-hero h1 { font-size: 1rem; }
-  .workspace-hero .wall-button { min-height: 34px; padding: .25rem .5rem; font-size: .75rem; }
-  .workspace-alerts { max-height: 44px; }
-  .compact-alert > p, .compact-alert > label { display: none; }
+  .workspace-hero .wall-button { padding-inline: .4rem; font-size: .75rem; }
   .task-icon { display: none; }
-  .task-picker { width: 100%; }
-  .task-meta { margin-left: 0; width: 100%; }
-  .workspace-metrics { grid-template-columns: repeat(2, minmax(0,1fr)); }
-  .workspace-metrics .metric-icon { display: none; }
-  .workspace-grid { grid-template-rows: minmax(240px, 1fr) minmax(420px, auto); }
+  .work-metric { padding: .32rem .34rem; }
+  .metric-icon { display: none; }
   .workspace-footage, .workspace-rail { padding: .5rem; }
-  .footage-head > span:last-child { display: none; }
-  .video-frame { min-height: 150px; }
-  .finding-layout { min-height: 260px; }
+  .footage-head > span:last-child { font-size: .75rem; }
   .modal-layer { padding: .5rem; }
   .modal-card { padding: 1rem; }
 }

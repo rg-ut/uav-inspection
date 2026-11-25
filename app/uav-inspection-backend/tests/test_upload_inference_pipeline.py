@@ -70,6 +70,9 @@ class UploadInferenceTests(unittest.TestCase):
                 'model': version, 'sensitivity': .05, 'image': base64.b64encode(jpeg).decode(),
             }))
             self.assertEqual(len(result['boxes']), expected)
+            self.assertEqual(result['detections'], [
+                {'bbox': box, 'name': 'TileSpalling', 'label': '面砖脱落'} for box in result['boxes']
+            ])
             self.assertEqual((result['width'], result['height']), (96, 64))
         self.data(self.client.post(url + '/runs', json={'model': version, 'sensitivity': .75, 'mode': 'all'}))
         deadline = time.monotonic() + 15
