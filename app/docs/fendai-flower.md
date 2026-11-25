@@ -41,8 +41,12 @@ UAV_DATA_DIR/
 ```
 
 素材中心沿用既有分片上传和防覆盖机制。上传完成后重新进入漫游页，无需重建前端。
-“其他模型”分类写入不同目录，不能替代该专用分类。页面的点数与训练轮次描述此发布模型；
-自定义模型还需要同步更新 `fendaiapp/api.py` 元数据、场景变换和初始相机。
+“其他模型”分类写入不同目录，不能替代该专用分类。
+
+已校验为上述发布模型的文件在首次进入漫游时自动生成精剪版，缓存在
+`fendaidata/.cache/fendai-garden-v1.ksplat`。首次准备需几秒，并在持久化数据目录占用约 77 MB。
+后续访问复用校验通过的缓存。素材中心和安装器继续使用原始模型。
+自定义模型或缓存不可写时，使用原来的自由漫游。
 
 ## Docker 与子路径
 
@@ -71,8 +75,8 @@ API 响应中的模型 URL 已含部署前缀，前端直接使用。
 
 | 接口 | 用途 |
 |---|---|
-| `GET /api/v1/fendai/scene` | 返回模型是否安装、带前缀模型 URL、点数与训练轮次 |
-| `GET /api/v1/fendai/model` | 返回固定 KSplat 文件，支持 Range；缺失为 404 |
+| `GET /api/v1/fendai/scene` | 返回模型状态、带前缀模型 URL、点数、训练轮次及已校准的漫游配置 |
+| `GET /api/v1/fendai/model` | 返回原始 KSplat。精剪版由场景接口返回的 `?garden=v1` URL 提供。两者支持 Range |
 | `HEAD /api/v1/fendai/model` | 查询文件大小等响应头 |
 | `GET /api/deployment/status` | `fendai_scene_available` 表示场景文件存在 |
 
@@ -93,24 +97,31 @@ SHA-256：101b60a7033cbf7d740c74b33d8be3f9ce358134e6de6521a03e7d42c0ce32f8
 
 ## 操作与验证
 
-桌面点击“进入第一人称漫游”后用鼠标转向，WASD 移动，Space/Ctrl 升降，Shift 加速，
-R 重置；Esc 退出鼠标锁定。手机拖动画面转向，使用方向和升降按钮。
-页面提供重置、全屏、加载与失败状态，退出页面会停止下载、动画与输入监听并释放渲染资源。
+精剪版保留弧形步道、主花田和双翼凉亭，去除外围散点和大面积模糊高斯点。
+点数由约 137 万降至 106 万，模型由 98.74 MB 降至 76.47 MB。步道和草地的补面填补低视角缺口，
+天空模拟太阳光晕及缓慢移动的云。碰撞采用根据重建数据估算的地表高程、凉亭体积和漫游边界，
+以演示尺度跟随地面、落在碰撞面上并限制飞行高度。
 
-模型下载后仍需解析和图形内存，低性能设备应实测。该场景是自由漫游，没有碰撞地形、
-实测尺寸、花量预测或病虫害识别。服务端展示无需训练环境，客户端需要能运行 WebGL 的浏览器。
+桌面点击“进入第一人称漫游”后用鼠标转向。WASD 移动，Shift 跑动或加速，
+Space 跳跃，F 切换飞行，飞行时用 Space/C 升降，R 重置，Esc 退出鼠标锁定。
+手机拖动画面转向，用方向键和跳跃、跑动按钮操作，点击顶栏模式按钮可切换升降控制。
+自定义模型使用自由漫游，仍用 Space/Ctrl 升降。
+
+页面提供重置、全屏、加载与失败状态，退出页面会停止下载、动画与输入监听并释放渲染资源。
+模型下载后仍需解析和图形内存，低性能设备应实测。客户端需运行支持 WebGL 的浏览器。
 当前关闭共享内存与 GPU 排序，无需为此功能增加 COOP/COEP；已有严格 CSP 的站点需允许库使用的 Blob Worker/WASM。
 
 验证命令：
 
 ```bash
 cd app/uav-inspection-ui
-node --test tests/webroot.test.mjs
+node --test tests/webroot.test.mjs tests/fendaiMotion.test.mjs
 npm run build
 # 子路径构建（PowerShell: $env:VITE_BASE='/uav/'; npm run build）
 VITE_BASE=/uav/ npm run build
 cd ../uav-inspection-backend
 python -m unittest discover -s tests -p test_optional_deployment.py -v
+python -m unittest discover -s tests -p test_fendai_garden.py -v
 python -m unittest discover -s tests -p test_uav_assets_upload.py -v
 python -m unittest discover -s tests -p test_uav_assets_chunked.py -v
 cd ..
