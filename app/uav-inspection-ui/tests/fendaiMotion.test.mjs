@@ -32,6 +32,7 @@ test('walking follows terrain and sprinting covers more ground', () => {
 test('jump rises from the surface, cannot retrigger midair and settles on the ground', () => {
   const player = new FendaiMotion(profile)
   const ground = player.feet
+  assert(Math.abs(player.eye - player.feet - 1.8) < 1e-10)
   player.jump()
   travel(player, 0.25, 0, 0, 0)
   assert(player.feet > ground + 0.6)
@@ -66,9 +67,27 @@ test('the calibrated spawn is on the path and clear of the boundary and pavilion
     '../../uav-inspection-backend/fendaiapp/garden.json', import.meta.url,
   ), 'utf8'))
   const [x, z, yaw] = garden.spawn
+  assert(Math.abs(groundHeight(garden, x, z) - 4.73) < 0.07)
   assert(garden.path.some(([px, pz]) => px === x && pz === z))
   const player = new FendaiMotion(garden)
   travel(player, 1, -Math.sin(yaw), -Math.cos(yaw), 0)
   assert(Math.hypot(player.x - x, player.z - z) > 2.7)
   assert.equal(player.feet, groundHeight(garden, player.x, player.z))
+})
+
+test('registered bench models sit on the path and block walking', () => {
+  const withBench = {
+    ...profile,
+    spawn: [2, 5, 0, 0],
+    obstacles: [],
+    pathDetail: {
+      sections: [[-4, 5, 0.5, 1.2, 1.2], [0, 5, 0.5, 1.2, 1.2], [10, 5, 0.5, 1.2, 1.2], [14, 5, 0.5, 1.2, 1.2]],
+      benches: [[5, 5, 0.5, 0]],
+    },
+  }
+  const player = new FendaiMotion(withBench)
+  assert.equal(player.feet, 0.5)
+  travel(player, 2, 1, 0, 0)
+  assert(player.x > 3.7 && player.x < 3.83)
+  assert.equal(player.feet, 0.5)
 })

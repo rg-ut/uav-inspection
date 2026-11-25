@@ -1,5 +1,6 @@
 import * as THREE from 'three'
-import { groundHeight } from './fendaiMotion'
+import { terrainHeight } from './fendaiMotion'
+import { createFendaiNearDetail } from './fendaiNearDetail'
 import type { GardenProfile } from './fendaiMotion'
 
 const noise = /* glsl */ `
@@ -96,7 +97,7 @@ export function createFendaiEnvironment(profile: GardenProfile) {
     const outside = Math.max(0, origin[0] - x, x - maxX, origin[1] - z, z - maxZ)
     const blend = THREE.MathUtils.smoothstep(outside, 0, 29)
     const hills = -4 + 4.2 * Math.sin(x * 0.038 + 0.8) * Math.cos(z * 0.04)
-    positions.setY(i, THREE.MathUtils.lerp(groundHeight(profile, x, z) - 0.52, hills, blend))
+    positions.setY(i, THREE.MathUtils.lerp(terrainHeight(profile, x, z) - 0.52, hills, blend))
   }
   const groundMaterial = new THREE.ShaderMaterial({
     depthWrite: false,
@@ -135,7 +136,7 @@ export function createFendaiEnvironment(profile: GardenProfile) {
     for (const side of [-1, 1]) {
       const x = point.x + side * 1.78 * tangent.z
       const z = point.z - side * 1.78 * tangent.x
-      vertices.push(x, groundHeight(profile, x, z) - 0.36, z)
+      vertices.push(x, terrainHeight(profile, x, z) - 0.36, z)
       uv.push((side + 1) / 2, t)
     }
     if (i < divisions) {
@@ -176,14 +177,22 @@ export function createFendaiEnvironment(profile: GardenProfile) {
     `,
   })
   scene.add(new THREE.Mesh(pathGeometry, pathMaterial))
+  const nearDetail = profile.pathDetail && createFendaiNearDetail(profile.pathDetail, noise)
 
   return {
     scene,
-    update(camera: THREE.PerspectiveCamera, seconds: number) {
+    installSplatDetail(material: THREE.ShaderMaterial) {
+      nearDetail?.install(material)
+    },
+    update(camera: THREE.PerspectiveCamera, seconds: number, groundClearance: number) {
       camera.updateMatrixWorld()
       skyMaterial.uniforms.inverseProjection!.value.copy(camera.projectionMatrixInverse)
       skyMaterial.uniforms.cameraWorld!.value.copy(camera.matrixWorld)
       skyMaterial.uniforms.time!.value = seconds
+      nearDetail?.update(camera, groundClearance)
+    },
+    renderNearDetail(renderer: THREE.WebGLRenderer, camera: THREE.PerspectiveCamera) {
+      nearDetail?.render(renderer, camera)
     },
     dispose() {
       skyGeometry.dispose()
@@ -192,6 +201,7 @@ export function createFendaiEnvironment(profile: GardenProfile) {
       groundMaterial.dispose()
       pathGeometry.dispose()
       pathMaterial.dispose()
+      nearDetail?.dispose()
     },
   }
 }

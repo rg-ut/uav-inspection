@@ -147,9 +147,10 @@ function renderFrame(time: number) {
   const deltaSeconds = lastFrameTime ? Math.min((time - lastFrameTime) / 1000, 0.05) : 0
   lastFrameTime = time
   movePlayer(deltaSeconds)
-  if (camera) environment?.update(camera, time / 1000)
+  if (camera && motion) environment?.update(camera, time / 1000, motion.groundClearance)
   viewer.update()
   viewer.render()
+  if (renderer && camera) environment?.renderNearDetail(renderer, camera)
 
   if (time - fpsUpdateAt > 700) {
     fps.value = viewer.currentFPS
@@ -413,6 +414,7 @@ onMounted(async () => {
     // 0.4.7 returns an AbortablePromise wrapper; await its native promise so rejections propagate.
     await modelLoad.promise
     if (disposed || viewer !== activeViewer) return
+    environment?.installSplatDetail(activeViewer.splatMesh.material)
     loadProgress.value = 100
     loadMessage.value = '正在优化初始视角'
     animationFrame = requestAnimationFrame(renderFrame)

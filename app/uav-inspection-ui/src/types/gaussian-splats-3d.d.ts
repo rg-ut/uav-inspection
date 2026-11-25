@@ -8,6 +8,7 @@ declare module '@mkkellogg/gaussian-splats-3d' {
 
   export class Viewer {
     constructor(options: Record<string, unknown>)
+    splatMesh: { material: import('three').ShaderMaterial }
     currentFPS: number | null
     sortRunning: boolean
     splatRenderCount: number
