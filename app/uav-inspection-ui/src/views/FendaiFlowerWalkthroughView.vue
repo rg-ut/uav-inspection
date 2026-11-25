@@ -2,8 +2,11 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import * as THREE from 'three'
-import { LogLevel, RenderMode, SceneFormat, Viewer } from '@mkkellogg/gaussian-splats-3d'
+import { LogLevel, RenderMode, SceneFormat, SceneRevealMode, Viewer } from '@mkkellogg/gaussian-splats-3d'
 import { webPath } from '../utils/webroot'
+import { createFendaiEnvironment } from '../utils/fendaiEnvironment'
+import { FendaiMotion } from '../utils/fendaiMotion'
+import type { GardenProfile, TravelMode } from '../utils/fendaiMotion'
 import {
   ArrowDown,
   ArrowLeft,
@@ -17,7 +20,7 @@ import {
   RotateCcw,
 } from 'lucide-vue-next'
 
-type MovementKey = 'KeyW' | 'KeyA' | 'KeyS' | 'KeyD' | 'Space' | 'ControlLeft' | 'ShiftLeft' | 'KeyR'
+type MovementKey = 'KeyW' | 'KeyA' | 'KeyS' | 'KeyD' | 'Space' | 'ControlLeft' | 'KeyC' | 'ShiftLeft'
 
 interface FendaiScene {
   id: string
@@ -26,6 +29,7 @@ interface FendaiScene {
   available: boolean
   point_count: number
   training_iterations: number
+  garden?: GardenProfile
 }
 
 const router = useRouter()
@@ -45,6 +49,9 @@ const loadHelp = computed(() => loadState.value === 'missing'
 const isPointerLocked = ref(false)
 const isFullscreen = ref(false)
 const fps = ref<number | null>(null)
+const travelMode = ref<TravelMode>('walk')
+const isFlying = computed(() => !scene.value?.garden || travelMode.value === 'fly')
+const movementKeys = new Set(['KeyW', 'KeyA', 'KeyS', 'KeyD', 'Space', 'ControlLeft', 'KeyC', 'ShiftLeft'])
 
 const playerSpawn = new THREE.Vector3(27.265092, 21.980719, -14.00421)
 const eyeHeight = 1.65
@@ -55,6 +62,8 @@ const keys = new Set<MovementKey>()
 let camera: THREE.PerspectiveCamera | null = null
 let renderer: THREE.WebGLRenderer | null = null
 let viewer: Viewer | null = null
+let motion: FendaiMotion | null = null
+let environment: ReturnType<typeof createFendaiEnvironment> | null = null
 let animationFrame = 0
 let lastFrameTime = 0
 let yaw = initialYaw
@@ -78,10 +87,28 @@ function setCameraAngles() {
 }
 
 function resetView() {
-  yaw = initialYaw
-  pitch = initialPitch
-  if (camera) camera.position.set(playerSpawn.x, playerSpawn.y + eyeHeight, playerSpawn.z)
+  const profile = scene.value?.garden
+  yaw = profile?.spawn[2] ?? initialYaw
+  pitch = profile?.spawn[3] ?? initialPitch
+  keys.clear()
+  travelMode.value = 'walk'
+  if (motion) {
+    motion.reset()
+    camera?.position.set(motion.x, motion.eye, motion.z)
+  } else {
+    camera?.position.set(playerSpawn.x, playerSpawn.y + eyeHeight, playerSpawn.z)
+  }
   setCameraAngles()
+}
+
+function toggleTravelMode() {
+  if (!motion || loadState.value !== 'ready') return
+  travelMode.value = travelMode.value === 'walk' ? 'fly' : 'walk'
+  keys.delete('Space')
+  keys.delete('ControlLeft')
+  keys.delete('KeyC')
+  motion.changeMode()
+  viewport.value?.focus({ preventScroll: true })
 }
 
 function resizeScene() {
@@ -96,21 +123,20 @@ function resizeScene() {
 
 function movePlayer(deltaSeconds: number) {
   if (!camera) return
-  const forward = new THREE.Vector3(-Math.sin(yaw), 0, -Math.cos(yaw))
-  const right = new THREE.Vector3(Math.cos(yaw), 0, -Math.sin(yaw))
-  const movement = new THREE.Vector3()
-
-  if (keys.has('KeyW')) movement.add(forward)
-  if (keys.has('KeyS')) movement.sub(forward)
-  if (keys.has('KeyD')) movement.add(right)
-  if (keys.has('KeyA')) movement.sub(right)
-  if (keys.has('Space')) movement.y += 1
-  if (keys.has('ControlLeft')) movement.y -= 1
-
-  if (movement.lengthSq() > 0) {
-    movement.normalize()
-    const speed = keys.has('ShiftLeft') ? 9 : 5
-    camera.position.addScaledVector(movement, speed * deltaSeconds)
+  const forward = Number(keys.has('KeyW')) - Number(keys.has('KeyS'))
+  const right = Number(keys.has('KeyD')) - Number(keys.has('KeyA'))
+  const dx = -forward * Math.sin(yaw) + right * Math.cos(yaw)
+  const dz = -forward * Math.cos(yaw) - right * Math.sin(yaw)
+  const rise = Number(keys.has('Space')) - Number(keys.has('ControlLeft') || keys.has('KeyC'))
+  const fast = keys.has('ShiftLeft')
+  if (motion) {
+    motion.advance(deltaSeconds, dx, dz, rise, travelMode.value, fast)
+    camera.position.set(motion.x, motion.eye, motion.z)
+  } else {
+    const distance = (fast ? 9 : 5) * deltaSeconds / Math.max(1, Math.hypot(dx, rise, dz))
+    camera.position.x += dx * distance
+    camera.position.y += rise * distance
+    camera.position.z += dz * distance
   }
 }
 
@@ -121,6 +147,7 @@ function renderFrame(time: number) {
   const deltaSeconds = lastFrameTime ? Math.min((time - lastFrameTime) / 1000, 0.05) : 0
   lastFrameTime = time
   movePlayer(deltaSeconds)
+  if (camera) environment?.update(camera, time / 1000)
   viewer.update()
   viewer.render()
 
@@ -162,18 +189,34 @@ async function settleInitialView(activeViewer: Viewer) {
   }
 }
 
+function pressKey(code: MovementKey) {
+  if (code === 'Space' && motion && !isFlying.value && !keys.has(code)) motion.jump()
+  keys.add(code)
+}
+
+function normalizeKey(code: string) {
+  if (code === 'ShiftRight') return 'ShiftLeft'
+  if (code === 'ControlRight') return 'ControlLeft'
+  return code
+}
+
 function onKeyDown(event: KeyboardEvent) {
-  if (loadState.value !== 'ready') return
-  const code = event.code as MovementKey | 'ShiftLeft'
-  if (['KeyW', 'KeyA', 'KeyS', 'KeyD', 'Space', 'ControlLeft', 'ShiftLeft'].includes(code)) {
+  if (loadState.value !== 'ready' || event.altKey || event.metaKey) return
+  const code = normalizeKey(event.code)
+  if (event.ctrlKey && code !== 'ControlLeft' && !keys.has('ControlLeft')) return
+  if (event.target instanceof HTMLElement && event.target.closest('input, textarea, select, [contenteditable]')) return
+  if (code === 'Space' && !isPointerLocked.value && event.target instanceof HTMLButtonElement) return
+  if (movementKeys.has(code)) {
     event.preventDefault()
-    keys.add(code as MovementKey)
+    if (code !== 'Space' || !event.repeat) pressKey(code as MovementKey)
   }
-  if (code === 'KeyR') resetView()
+  if (event.ctrlKey) return
+  if (!event.repeat && code === 'KeyF') toggleTravelMode()
+  if (!event.repeat && code === 'KeyR') resetView()
 }
 
 function onKeyUp(event: KeyboardEvent) {
-  keys.delete(event.code as MovementKey)
+  keys.delete(normalizeKey(event.code) as MovementKey)
 }
 
 function onMouseMove(event: MouseEvent) {
@@ -205,6 +248,7 @@ function startPointerLock() {
 
 function onTouchStart(event: PointerEvent) {
   if (loadState.value !== 'ready' || event.pointerType !== 'touch' || !viewport.value) return
+  if (event.target instanceof Element && event.target.closest('button')) return
   activeTouchId = event.pointerId
   previousTouch = { x: event.clientX, y: event.clientY }
   viewport.value.setPointerCapture(event.pointerId)
@@ -227,8 +271,9 @@ function onTouchEnd(event: PointerEvent) {
 function pressMovement(key: MovementKey, event: PointerEvent) {
   if (loadState.value !== 'ready') return
   event.preventDefault()
-  keys.add(key)
-  ;(event.currentTarget as HTMLElement).setPointerCapture(event.pointerId)
+  pressKey(key)
+  const button = event.currentTarget as HTMLElement
+  button.setPointerCapture(event.pointerId)
 }
 
 function releaseMovement(key: MovementKey) {
@@ -262,6 +307,9 @@ async function goToAssets() {
 function releaseScene() {
   const activeViewer = viewer
   const activeRenderer = renderer
+  const activeEnvironment = environment
+  environment = null
+  motion = null
   viewer = null
   renderer = null
   camera = null
@@ -271,6 +319,7 @@ function releaseScene() {
   resolveSettleFrame = null
   activeRenderer?.domElement.remove()
   const releaseRenderer = () => {
+    activeEnvironment?.dispose()
     activeRenderer?.dispose()
     activeRenderer?.forceContextLoss()
   }
@@ -300,16 +349,22 @@ onMounted(async () => {
     }
 
     renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: 'high-performance' })
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5))
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, data.garden ? 1.75 : 1.5))
     renderer.setClearColor(0x101719, 1)
     element.appendChild(renderer.domElement)
 
     camera = new THREE.PerspectiveCamera(58, 1, 0.02, 1500)
     camera.up.set(0, 1, 0)
+    const profile = data.garden
+    if (profile) {
+      motion = new FendaiMotion(profile)
+      environment = createFendaiEnvironment(profile)
+    }
     resetView()
 
     viewer = new Viewer({
       rootElement: element,
+      threeScene: environment?.scene,
       renderer,
       camera,
       selfDrivenMode: false,
@@ -318,9 +373,12 @@ onMounted(async () => {
       gpuAcceleratedSort: false,
       integerBasedSort: false,
       halfPrecisionCovariancesOnGPU: true,
+      // Limit the screen coverage of oversized splats close to the walking camera.
+      maxScreenSpaceSplatSize: profile ? 320 : undefined,
       freeIntermediateSplatData: true,
       sphericalHarmonicsDegree: 2,
       renderMode: RenderMode.Always,
+      sceneRevealMode: profile ? SceneRevealMode.Instant : undefined,
       logLevel: LogLevel.None,
     })
     resizeScene()
@@ -331,9 +389,10 @@ onMounted(async () => {
       format: SceneFormat.KSplat,
       showLoadingUI: false,
       splatAlphaRemovalThreshold: 5,
-      position: [8.7518215, 32.66471, -2.003349],
-      rotation: [0.8112788, 0, 0.3221035, -0.48793045],
-      scale: [44.286705, 44.286705, -44.286705],
+      position: profile?.modelPosition ?? [8.7518215, 32.66471, -2.003349],
+      rotation: profile?.modelRotation ?? [0.8112788, 0, 0.3221035, -0.48793045],
+      scale: profile ? [profile.modelScale, profile.modelScale, -profile.modelScale]
+        : [44.286705, 44.286705, -44.286705],
       onProgress: (percent: number, label?: string, state?: number) => {
         if (disposed || viewer !== activeViewer) return
         loadProgress.value = Math.max(0, Math.min(100, Math.round(percent)))
@@ -391,7 +450,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <main ref="viewport" class="flower-walkthrough" @pointerdown="onTouchStart" @pointermove="onTouchMove" @pointerup="onTouchEnd" @pointercancel="onTouchEnd">
+  <main ref="viewport" tabindex="-1" class="flower-walkthrough" @pointerdown="onTouchStart" @pointermove="onTouchMove" @pointerup="onTouchEnd" @pointercancel="onTouchEnd">
     <header class="scene-header">
       <button class="icon-button back-button" aria-label="返回平台首页" title="返回平台首页" @click="goHome">
         <ArrowLeft :size="19" />
@@ -416,6 +475,10 @@ onBeforeUnmount(() => {
       </div>
 
       <div class="scene-actions">
+        <button v-if="scene?.garden" class="icon-button mode-button" type="button"
+          :disabled="loadState !== 'ready'" :class="{ active: isFlying }"
+          aria-label="飞行模式" aria-keyshortcuts="F" :aria-pressed="isFlying"
+          title="切换步行与飞行（F）" @click="toggleTravelMode">{{ isFlying ? '飞行' : '步行' }}</button>
         <button class="icon-button desktop-only" :disabled="loadState !== 'ready'" :class="{ active: isPointerLocked }" aria-label="进入第一人称漫游" title="进入第一人称漫游" @click="startPointerLock">
           <MousePointer2 :size="18" />
         </button>
@@ -454,8 +517,10 @@ onBeforeUnmount(() => {
       </div>
       <div class="desktop-controls" aria-label="漫游控制">
         <span><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd><i>移动</i></span>
-        <span><kbd>Space</kbd><kbd>Ctrl</kbd><i>升降</i></span>
-        <span><kbd>Shift</kbd><i>加速</i></span>
+        <span v-if="isFlying"><kbd>Space</kbd><kbd>{{ scene?.garden ? 'C' : 'Ctrl' }}</kbd><i>升降</i></span>
+        <span v-else><kbd>Space</kbd><i>跳跃</i></span>
+        <span><kbd>Shift</kbd><i>{{ isFlying ? '加速' : '跑动' }}</i></span>
+        <span v-if="scene?.garden"><kbd>F</kbd><i>切换模式</i></span>
         <span><kbd>R</kbd><i>重置</i></span>
       </div>
     </footer>
@@ -468,8 +533,9 @@ onBeforeUnmount(() => {
         <button class="pad-button pad-right" aria-label="向右" title="向右" @pointerdown.stop="pressMovement('KeyD', $event)" @pointerup="releaseMovement('KeyD')" @pointercancel="releaseMovement('KeyD')" @lostpointercapture="releaseMovement('KeyD')"><ArrowRight :size="18" /></button>
       </div>
       <div class="vertical-pad">
-        <button class="pad-button" aria-label="上升" title="上升" @pointerdown.stop="pressMovement('Space', $event)" @pointerup="releaseMovement('Space')" @pointercancel="releaseMovement('Space')" @lostpointercapture="releaseMovement('Space')"><MoveUp :size="18" /></button>
-        <button class="pad-button" aria-label="下降" title="下降" @pointerdown.stop="pressMovement('ControlLeft', $event)" @pointerup="releaseMovement('ControlLeft')" @pointercancel="releaseMovement('ControlLeft')" @lostpointercapture="releaseMovement('ControlLeft')"><MoveDown :size="18" /></button>
+        <button class="pad-button" :aria-label="isFlying ? '上升' : '跳跃'" :title="isFlying ? '上升' : '跳跃'" @pointerdown.stop="pressMovement('Space', $event)" @pointerup="releaseMovement('Space')" @pointercancel="releaseMovement('Space')" @lostpointercapture="releaseMovement('Space')"><MoveUp :size="18" /></button>
+        <button v-if="isFlying" class="pad-button" aria-label="下降" title="下降" @pointerdown.stop="pressMovement('ControlLeft', $event)" @pointerup="releaseMovement('ControlLeft')" @pointercancel="releaseMovement('ControlLeft')" @lostpointercapture="releaseMovement('ControlLeft')"><MoveDown :size="18" /></button>
+        <button v-else class="pad-button sprint-button" aria-label="跑动" title="跑动" @pointerdown.stop="pressMovement('ShiftLeft', $event)" @pointerup="releaseMovement('ShiftLeft')" @pointercancel="releaseMovement('ShiftLeft')" @lostpointercapture="releaseMovement('ShiftLeft')">跑</button>
       </div>
     </nav>
   </main>
@@ -817,6 +883,18 @@ onBeforeUnmount(() => {
   font-style: normal;
 }
 
+.mode-button {
+  width: auto;
+  min-width: 44px;
+  padding: 0 7px;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.sprint-button {
+  font-size: 13px;
+}
+
 .touch-controls {
   display: none;
 }
@@ -841,6 +919,7 @@ onBeforeUnmount(() => {
   .scene-title h1 { font-size: 14px; }
   .scene-status { gap: 7px; margin: 0; font-size: 10px; }
   .scene-actions { gap: 5px; margin-left: 2px; }
+  .mode-button.icon-button { width: auto; }
   .icon-button { width: 34px; height: 34px; }
   .desktop-only { display: none !important; }
 

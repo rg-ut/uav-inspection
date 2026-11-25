@@ -3,6 +3,7 @@ declare module '@mkkellogg/gaussian-splats-3d' {
 
   export const RenderMode: { Always: number }
 
+  export const SceneRevealMode: { Instant: number }
   export const SceneFormat: { KSplat: number }
 
   export class Viewer {
