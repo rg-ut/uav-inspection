@@ -64,7 +64,7 @@ class PlatePackageUploadTests(unittest.TestCase):
         cls.temp = tempfile.TemporaryDirectory()
         cls.addClassCleanup(cls.temp.cleanup)
         cls.enterClassContext(patch.dict(os.environ, {'UAV_DATA_DIR': cls.temp.name,
-            'UAV_PLATE_DATA_UPLOADERS': 'operator,second_operator', 'UAV_CHUNK_SIZE': '8192'}))
+            'UAV_CHUNK_SIZE': '8192'}))
         from assetsapp.api import router as assets_router
         from authapp.api import router as auth_router
         from plateapp.api.detect import router as plate_router
@@ -107,9 +107,12 @@ class PlatePackageUploadTests(unittest.TestCase):
         status_url = '/api/v1/assets/plate-data'
         before = self.client.get(status_url).json()['data']['active']['run']
         first = make_package('test_batch_1', self.video, self.seconds)
-        unauthorized = self.reader.post('/api/v1/assets/upload/init',
+        status = self.client.get(status_url).json()['data']
+        self.assertTrue(status['canPublish'])
+        self.assertTrue(self.reader.get(status_url).json()['data']['canPublish'])
+        reader_init = self.reader.post('/api/v1/assets/upload/init',
             data={'category': CATEGORY, 'filename': 'batch.tar.gz', 'size': len(first)})
-        self.assertEqual(unauthorized.status_code, 403)
+        self.assertEqual(reader_init.status_code, 200)
         first_id = self.stream(wrap(first), 'handoff.zip')
         self.assertEqual(self.second.get('/api/v1/assets/upload/status',
             params={'upload_id': first_id}).status_code, 403)
@@ -140,7 +143,6 @@ class PlatePackageUploadTests(unittest.TestCase):
         self.assertEqual(self.complete(second_id).status_code, 200)
         self.assertEqual(self.client.get(status_url).json()['data']['previous']['run'], 'test_batch_1')
         self.assertEqual(self.reader.get(video, headers={'Range': 'bytes=0-63'}).status_code, 206)
-        self.assertEqual(self.reader.post(status_url + '/restore').status_code, 403)
-        self.assertEqual(self.client.post(status_url + '/restore').status_code, 200)
+        self.assertEqual(self.reader.post(status_url + '/restore').status_code, 200)
         self.assertEqual(self.client.get(status_url).json()['data']['active']['run'], 'test_batch_1')
         self.assertNotEqual(before, 'test_batch_1')
