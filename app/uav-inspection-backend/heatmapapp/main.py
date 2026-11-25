@@ -8,6 +8,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from deployment_paths import DATA_ROOT, PROJECT_ROOT, backend_path, project_path
 from deployment_readiness import MODEL_PATHS, module_status
 from optional_inference import inference_dependencies_available
+from roofapp.runtime import model_status as roof_model_status
 
 from heatmapapp.api.v1 import tasks, websocket, predict
 from heatmapapp.services.ai_inference import engine
@@ -132,7 +133,7 @@ async def deployment_status():
     return {'code': 200, 'data': {
         'data_available': has_video or has_measurements or has_fendai_scene,
         'fendai_scene_available': has_fendai_scene,
-        'inference_available': dependencies and any(models.values()),
+        'inference_available': (dependencies and any(models.values())) or roof_model_status()['ready'],
         'inference_dependencies_installed': dependencies,
         'models': models,
         'missing_models': [name for name, exists in models.items() if not exists],

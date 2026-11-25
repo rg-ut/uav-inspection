@@ -568,8 +568,13 @@ def detect_preview(payload: LiveFrame):
         version = payload.model + ':' + str(path.stat().st_mtime_ns)
         started = time.perf_counter()
         predict = preview_predictor(version)
-        boxes = [item['bbox'] for item in predict(frame, 1 - payload.sensitivity, 0.45)]
-        return answer({'boxes': boxes, 'width': frame.shape[1], 'height': frame.shape[0],
+        detections = [
+            {'bbox': item['bbox'], 'name': item['name'],
+             'label': KIND_LABELS.get(item['name'], item.get('cn') or item['name'])}
+            for item in predict(frame, 1 - payload.sensitivity, 0.45)
+        ]
+        return answer({'boxes': [item['bbox'] for item in detections], 'detections': detections,
+                       'width': frame.shape[1], 'height': frame.shape[0],
                        'inference_ms': round((time.perf_counter() - started) * 1000, 1)})
     except (ValueError, RuntimeError, OSError, analysis.cv2.error):
         raise HTTPException(503, '检测暂不可用，请检查所选模型') from None

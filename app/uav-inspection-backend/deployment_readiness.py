@@ -10,6 +10,7 @@ from pathlib import Path
 from deployment_paths import backend_path
 from optional_inference import inference_dependencies_available
 from roseapp.detector import _resolve_model_path
+from roofapp import runtime as roof_runtime
 from vegetationapp import api as vegetation
 
 VIDEO_SUFFIXES = {'.mp4', '.avi', '.mov', '.mkv', '.webm'}
@@ -19,6 +20,7 @@ MODEL_PATHS = {
     'telecom': lambda: backend_path('telecomapp', 'station2-best.pt'),
     'power': lambda: backend_path('powerapp', 'wire-pole-seg.pt'),
     'wall': lambda: backend_path('wallapp', 'wall-damage-best.pt'),
+    'roof': roof_runtime.model_path,
     'pruning': lambda: backend_path('treeapp', 'tree-pruning-best.pt'),
 }
 
@@ -47,7 +49,8 @@ def module_status() -> dict[str, dict]:
         return {'label': label, 'category': category, 'subdir': subdir}
 
     for key, title, route, media_ready, media_category in (
-        ('telecom', '通信基站巡检', '/telecom', _paired_task(backend_path('telecom-tasks')), 'telecom-tasks'),
+        ('telecom', '通信基站巡检', '/telecom', _paired_task(backend_path('telecom-tasks'))
+         or _has_video(backend_path('telecomdata', 'media')), 'telecom-tasks'),
         ('power', '杆路线路巡检', '/power', _has_video(backend_path('powerdata', 'media')), 'power-media'),
         ('pruning', '乔木修剪检测', '/pruning', _has_video(backend_path('treedata', 'media')), 'pruning-media'),
         ('rose', '玫瑰产量估计', '/rose-yield', _paired_task(backend_path('rose-tasks')), 'rose-tasks'),
@@ -82,9 +85,20 @@ def module_status() -> dict[str, dict]:
     roof_ready = any(folder.is_dir() and _has_video(folder) and all(
         backend_path('roofdata', 'reports', folder.name, name).is_file()
         for name in ('defects.json', 'telemetry.json')) for folder in roof_tasks.glob('*'))
-    roof_missing = [] if roof_ready else [requirement('同一任务的视频、defects.json 与 telemetry.json', 'roof-reports')]
-    entry('roof', '建筑屋顶巡检', '/roof', 'offline-results', roof_missing,
-          '当前模块回放离线检测结果；上传新视频不会自动生成缺陷与报告。')
+    roof_model = roof_runtime.model_path()
+    if roof_ready and not roof_model.is_file():
+        entry('roof', '建筑屋顶巡检', '/roof', 'offline-results', [],
+              '可查看历史检测结果。添加屋顶模型后，可检测新任务。')
+    else:
+        roof_missing = []
+        if not _paired_task(roof_tasks):
+            roof_missing.append(requirement('在屋顶巡检页上传任务录像'))
+        if not roof_model.is_file():
+            roof_missing.append(requirement('在屋顶巡检页上传 YOLO 权重'))
+        elif roof_model.suffix == '.pt' and not dependencies:
+            roof_missing.append(requirement('安装服务器 AI 推理依赖，或上传兼容的 ONNX 权重'))
+        entry('roof', '建筑屋顶巡检', '/roof', 'inference', roof_missing,
+              '上传录像和对应的可选 SRT 字幕，添加模型后开始检测。')
 
     task_key = vegetation.TASKS[0]['key']
     summaries_ready = any(all(path.is_file() for path in (

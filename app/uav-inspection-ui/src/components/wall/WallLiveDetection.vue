@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref, watch } from 'vue'
 import { request } from '../../utils/request'
-import { wallWorkflow, type ModelOption } from '../../api1/wallWorkflow'
+import { wallWorkflow, type FrameDetectionResult, type ModelOption } from '../../api1/wallWorkflow'
+
+import WallDetectionOverlay from './WallDetectionOverlay.vue'
 
 const props = defineProps<{ video: HTMLVideoElement | null; deviceId: string; connected: boolean }>()
 const models = ref<ModelOption[]>([])
@@ -9,8 +11,7 @@ const model = ref('')
 const sensitivity = ref(0.75)
 const enabled = ref(false)
 const unavailable = ref(false)
-const boxes = ref<number[][]>([])
-const dimensions = ref({ width: 640, height: 360 })
+const preview = ref<FrameDetectionResult | null>(null)
 const canvas = document.createElement('canvas')
 const context = canvas.getContext('2d')
 let scan: number | undefined
@@ -20,7 +21,7 @@ let expires: number | undefined
 
 watch(() => [enabled.value, props.connected, props.deviceId, model.value, sensitivity.value], () => {
   generation++
-  boxes.value = []
+  preview.value = null
   unavailable.value = false
 })
 
@@ -37,19 +38,18 @@ async function scanFrame() {
   const image = canvas.toDataURL('image/jpeg', 0.74).split(',')[1]
   pending = true
   try {
-    const result = await request<{ boxes: number[][]; width: number; height: number }>({
+    const result = await request<FrameDetectionResult>({
       url: '/wall/workflow/live/' + props.deviceId + '/detect', method: 'POST',
       data: { model: model.value, sensitivity: sensitivity.value, image }, timeout: 2500,
     })
     if (active !== generation) return
     unavailable.value = false
-    boxes.value = element.currentTime - frameTime <= 0.4 ? result.data.boxes : []
-    dimensions.value = { width: result.data.width, height: result.data.height }
+    preview.value = element.currentTime - frameTime <= 0.4 ? result.data : null
     clearTimeout(expires)
-    expires = window.setTimeout(() => { boxes.value = [] }, 400)
+    expires = window.setTimeout(() => { preview.value = null }, 400)
   } catch (failure) {
     if (active !== generation) return
-    boxes.value = []
+    preview.value = null
     unavailable.value = (failure as { response?: { status?: number } }).response?.status !== 429
   } finally {
     pending = false
@@ -75,12 +75,7 @@ onUnmounted(() => {
 
 <template>
   <Teleport v-if="video?.parentElement" :to="video.parentElement">
-    <svg v-if="boxes.length" :viewBox="'0 0 ' + dimensions.width + ' ' + dimensions.height"
-      class="pointer-events-none absolute inset-0 size-full" aria-label="直播画面的疑似脱落标记" role="img">
-      <rect v-for="(box, index) in boxes" :key="index" :x="box[0]!" :y="box[1]!"
-        :width="box[2]! - box[0]!" :height="box[3]! - box[1]!"
-        fill="none" stroke="#fbbf24" stroke-width="2" vector-effect="non-scaling-stroke" />
-    </svg>
+    <WallDetectionOverlay v-if="preview" :frame="preview" />
   </Teleport>
   <div class="mt-3 flex flex-wrap items-end gap-3 text-sm">
     <label>检测模型<select v-model="model" class="mt-1 block rounded border border-slate-300 px-2 py-1">

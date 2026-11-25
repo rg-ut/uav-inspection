@@ -55,10 +55,10 @@ function extractText(source: string, key: string): string {
 }
 
 export function parseSrt(content: string): TelemetryFrame[] {
-  const normalized = content.replace(/\r\n/g, '\n').trim()
+  const normalized = content.replace(/\r\n?/g, '\n').trim()
   if (!normalized) return []
 
-  const blocks = normalized.split(/\n{2,}/)
+  const blocks = normalized.split(/\n(?:[ \t]*\n)+/)
   const frames: TelemetryFrame[] = []
 
   for (const block of blocks) {
@@ -67,7 +67,7 @@ export function parseSrt(content: string): TelemetryFrame[] {
       .map((line) => line.trim())
       .filter(Boolean)
 
-    if (lines.length < 3) continue
+    if (lines.length < 2) continue
 
     const timeLine = lines.find((line) => line.includes('-->'))
     if (!timeLine) continue

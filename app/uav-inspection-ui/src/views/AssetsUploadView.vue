@@ -465,7 +465,8 @@ onMounted(async () => {
             <div class="mt-2 flex flex-wrap gap-3 text-xs font-semibold text-blue-800">
               <RouterLink v-if="key === 'wall'" to="/wall?upload=1">上传外墙任务</RouterLink>
               <RouterLink v-else-if="mediaCategories[key]" :to="{ path: '/assets', query: { category: mediaCategories[key] } }">上传素材</RouterLink>
-              <RouterLink v-if="item.mode === 'inference'" :to="{ path: '/assets', query: { category: key + '-model' } }">上传权重 / 试运行</RouterLink>
+              <RouterLink v-if="key === 'roof'" to="/roof">上传模型或检测</RouterLink>
+              <RouterLink v-else-if="item.mode === 'inference'" :to="{ path: '/assets', query: { category: key + '-model' } }">上传权重 / 试运行</RouterLink>
             </div>
           </div>
         </div>

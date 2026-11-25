@@ -6,6 +6,7 @@ export interface PowerVideoItem {
   task_name?: string
   created_at?: string
   url: string
+  srt_url?: string
 }
 
 export interface PowerDetectionItem {

@@ -73,7 +73,7 @@ class ModuleReadinessTests(unittest.TestCase):
         self.assertFalse(modules['heatmap']['configured'])  # No video installed.
         self.assertEqual(modules['pest']['mode'], 'simulation')
         self.assertTrue(modules['pest']['configured'])  # Simulation needs no uploaded media or YOLO.
-        self.assertEqual(modules['roof']['mode'], 'offline-results')
+        self.assertEqual(modules['roof']['mode'], 'inference')
 
     def test_dedicated_model_uploads_match_detector_paths(self):
         from deployment_readiness import MODEL_PATHS
