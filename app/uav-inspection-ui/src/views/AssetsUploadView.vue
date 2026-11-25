@@ -94,19 +94,12 @@ const stopping = ref(false)
 const message = reactive({ kind: '' as '' | 'ok' | 'err', text: '' })
 const files = ref<FileEntry[]>([])
 const filesRoot = ref('')
+const uploadSection = ref<HTMLElement | null>(null)
 const selectedCategory = computed(() => categories.value.find(item => item.key === category.value))
 const isPlatePackage = computed(() => category.value === PLATE_CATEGORY)
 const plateStatus = ref<PlateStatus | null>(null)
 const restoringPlate = ref(false)
 const fileInputRef = ref<HTMLInputElement | null>(null)
-
-// 顶部「车牌巡检数据包」按钮：切到数据包分类并直接弹出系统文件选择器
-async function openPlatePackagePicker() {
-  if (busy.value || restoringPlate.value) return
-  await router.replace({ query: { category: PLATE_CATEGORY } })
-  await nextTick()
-  fileInputRef.value?.click()
-}
 
 interface ModuleStatus { title: string; route: string; mode: string; configured: boolean; missing: { label: string; category: string; subdir: string }[]; note: string }
 const modules = ref<Record<string, ModuleStatus>>({})
@@ -117,9 +110,46 @@ const selectedModuleKey = computed(() => {
   return key === 'tree' ? 'height' : key === 'measurement' || key === 'models' ? 'area' : key
 })
 const selectedModule = computed(() => modules.value[selectedModuleKey.value])
-const mediaCategories: Record<string, string> = { telecom: 'telecom-tasks', rose: 'rose-tasks', power: 'power-media',
+const mediaCategories: Record<string, string> = { telecom: 'telecom-tasks', rose: 'rose-tasks', power: 'power-media', plate: PLATE_CATEGORY,
   pruning: 'pruning-media', heatmap: 'heatmap-videos', roof: 'roof-media', height: 'tree-instances',
   area: 'measurement-data', fendai: 'fendai-scenes' }
+
+function describeModule(item: ModuleStatus): string {
+  if (item.mode === 'inference') return item.configured ? '素材已配置，模型需试运行确认' : '视频、权重与运行环境需齐备'
+  if (item.mode === 'offline-results') return '离线结果回放'
+  if (item.mode === 'simulation') return '内置仿真演示'
+  return '场景与数据展示'
+}
+
+const moduleCards = computed(() => {
+  const cards = Object.entries(modules.value).map(([key, item]) => ({
+    key, title: item.title, route: item.route, description: describeModule(item), canCheckModel: item.mode === 'inference',
+  }))
+  if (categories.value.some(item => item.key === PLATE_CATEGORY)) {
+    const position = cards.findIndex(card => card.key === 'power') + 1
+    cards.splice(position, 0, {
+      key: 'plate', title: '无人机车牌巡检', route: '/plate?view=mission',
+      description: '按批次上传录像、航线和取证图', canCheckModel: false,
+    })
+  }
+  return cards
+})
+
+async function openUploadSection(event: MouseEvent, key: string) {
+  if (busy.value || restoringPlate.value) {
+    event.preventDefault()
+    return
+  }
+  if (event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return
+  if (key === 'plate') {
+    event.preventDefault()
+    await router.replace({ query: { category: PLATE_CATEGORY } })
+    await nextTick()
+    fileInputRef.value?.click()
+  }
+  uploadSection.value?.scrollIntoView({ block: 'start' })
+}
+
 watch(category, () => { checkResult.value = null })
 async function loadStatus() {
   try {
@@ -501,28 +531,23 @@ onMounted(async () => {
         <h2 class="text-lg font-bold text-slate-800">按模块准备演示</h2>
         <p class="mt-2 text-sm text-slate-600">先选择模块，再上传素材与权重。文件保存后，点击“检查并试运行模型”确认推理环境。视频上传后还需进入模块选择任务并开始播放或检测。</p>
         <div class="mt-3 grid gap-2 sm:grid-cols-3">
-          <div v-for="(item, key) in modules" :key="key" class="rounded-md border p-3 text-sm" :class="key === selectedModuleKey ? 'border-blue-400 bg-blue-50' : 'border-slate-200'">
-            <RouterLink :to="item.route" class="font-bold hover:underline">{{ item.title }} →</RouterLink>
-            <p class="mt-1 text-xs text-slate-500">{{ item.mode === 'inference' ? item.configured ? '素材已配置，模型需试运行确认' : '视频、权重与运行环境需齐备' : item.mode === 'offline-results' ? '离线结果回放' : item.mode === 'simulation' ? '内置仿真演示' : '场景与数据展示' }}</p>
+          <div v-for="card in moduleCards" :key="card.key" class="rounded-md border p-3 text-sm" :class="card.key === selectedModuleKey ? 'border-blue-400 bg-blue-50' : 'border-slate-200'">
+            <RouterLink :to="card.route" class="font-bold hover:underline">{{ card.title }} →</RouterLink>
+            <p class="mt-1 text-xs text-slate-500">{{ card.description }}</p>
             <div class="mt-2 flex flex-wrap gap-3 text-xs font-semibold text-blue-800">
-              <RouterLink v-if="key === 'wall'" to="/wall?upload=1">上传外墙任务</RouterLink>
-              <RouterLink v-else-if="mediaCategories[key]" :to="{ path: '/assets', query: { category: mediaCategories[key] } }">上传素材</RouterLink>
-              <RouterLink v-if="key === 'roof'" to="/roof">上传模型或检测</RouterLink>
-              <RouterLink v-else-if="item.mode === 'inference'" :to="{ path: '/assets', query: { category: key + '-model' } }">上传权重 / 试运行</RouterLink>
+              <RouterLink v-if="card.key === 'wall'" to="/wall?upload=1">上传外墙任务</RouterLink>
+              <RouterLink v-else-if="mediaCategories[card.key]" :to="{ path: '/assets', query: { category: mediaCategories[card.key] } }"
+                :aria-disabled="busy || restoringPlate" @click.capture="openUploadSection($event, card.key)">{{ card.key === 'plate' ? '上传数据包' : '上传素材' }}</RouterLink>
+              <RouterLink v-if="card.key === 'roof'" to="/roof">上传模型或检测</RouterLink>
+              <RouterLink v-else-if="card.canCheckModel" :to="{ path: '/assets', query: { category: card.key + '-model' } }">上传权重 / 试运行</RouterLink>
             </div>
           </div>
         </div>
       </section>
-      <section class="flex flex-col gap-5 rounded-lg border border-slate-200 bg-white p-4 shadow-sm sm:p-6">
-        <div class="flex flex-wrap items-center justify-between gap-3">
-          <h2 class="text-lg font-bold text-slate-800 flex items-center gap-2">
-            <UploadCloud :size="20" class="text-blue-600" /> 上传素材
-          </h2>
-          <button type="button" class="rounded-md border border-blue-300 px-3 py-2 text-sm font-semibold text-blue-800 disabled:opacity-50"
-            :disabled="busy || restoringPlate" @click="openPlatePackagePicker">
-            车牌巡检数据包
-          </button>
-        </div>
+      <section ref="uploadSection" aria-labelledby="asset-upload-title" class="flex scroll-mt-4 flex-col gap-5 rounded-lg border border-slate-200 bg-white p-4 shadow-sm sm:p-6">
+        <h2 id="asset-upload-title" class="text-lg font-bold text-slate-800 flex items-center gap-2">
+          <UploadCloud :size="20" class="text-blue-600" /> 上传素材
+        </h2>
 
         <div class="grid grid-cols-1 md:grid-cols-2 gap-5">
           <label class="flex flex-col gap-1.5 text-sm font-medium text-slate-600">
