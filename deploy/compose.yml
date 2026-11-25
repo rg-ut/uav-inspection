@@ -10,6 +10,7 @@ services:
       # 挂在反向代理子路径下时与 nginx 的前缀保持一致；根路径部署可置空
       - UAV_URL_PREFIX=${UAV_URL_PREFIX-/uav}
       - UAV_DATA_DIR=/data
+      - UAV_PLATE_DATA_UPLOADERS
       - UAV_WALL_ADMINS
       - UAV_WALL_LIVE_DEVICES
       - UAV_WALL_TELEMETRY_KEY

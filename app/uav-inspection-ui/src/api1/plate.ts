@@ -196,6 +196,11 @@ export interface CoverageData {
 }
 
 export const plateApi = {
+  getReplayBundle() {
+    return request<{ acceptance: AcceptanceData | null; replay: ReplayData | null; coverage: CoverageData | null; path: PlatePathData | null }>({
+      url: '/plate/replay-bundle', method: 'GET',
+    })
+  },
   getHealth() {
     return request<{
       status: string
