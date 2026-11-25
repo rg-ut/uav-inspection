@@ -39,6 +39,9 @@ def check_module(module: str, account=Depends(require_account)):
             cache_key = version + ':' + str(path.stat().st_mtime_ns)
             with _preview_lock:
                 preview_predictor(cache_key)(frame, 0.25, 0.45)
+        elif module == 'roof':
+            from roofapp.runtime import check_model
+            check_model()
         else:
             path = MODEL_PATHS[module]()
             if not path.is_file():

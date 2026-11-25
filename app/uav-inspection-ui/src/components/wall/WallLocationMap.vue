@@ -11,14 +11,19 @@ interface LocationPoint {
   label: string
   color: string
   maxGap?: number
+  breakBefore?: boolean
 }
 
 const props = defineProps<{
   compact?: boolean
   fill?: boolean
+  seekable?: boolean
+  playbackTime?: number
   points: LocationPoint[]
   current: { latitude: number; longitude: number } | null
 }>()
+
+const emit = defineEmits<{ seek: [seconds: number] }>()
 
 const containerRef = ref<HTMLDivElement | null>(null)
 let map: L.Map | null = null
@@ -93,35 +98,58 @@ function follow() {
   if (props.current) map?.panTo([props.current.latitude, props.current.longitude], { animate: false })
 }
 
+function addRoute(points: LocationPoint[]) {
+  if (!overlay || points.length < 2) return
+  const coordinates: L.LatLngTuple[] = points.map(point => [point.latitude, point.longitude])
+  if (!props.seekable) {
+    L.polyline(coordinates, { color: '#0f766e', weight: 3 }).addTo(overlay)
+    return
+  }
+  L.polyline(coordinates, { color: '#183731', weight: 7, opacity: .8, interactive: false }).addTo(overlay)
+  L.polyline(coordinates, { color: '#46e7ca', weight: 4, opacity: 1 }).addTo(overlay).on('click', (event: L.LeafletMouseEvent) => {
+    if (!map) return
+    let nearest = points[0]
+    let best = Infinity
+    const time = props.playbackTime ?? 0
+    for (const point of points) {
+      const position = map.latLngToLayerPoint([point.latitude, point.longitude])
+      const distance = position.distanceTo(event.layerPoint)
+      if (distance < best || (distance === best && Math.abs(point.time - time) < Math.abs(nearest.time - time))) {
+        nearest = point
+        best = distance
+      }
+    }
+    emit('seek', nearest.time)
+  })
+}
+
 function renderPoints() {
   if (!map || !overlay) return
   overlay.clearLayers()
   const bounds: L.LatLngExpression[] = []
-
-  if (props.points.length > 1) {
-    let route: L.LatLngTuple[] = []
-    let previous: number | undefined
-    for (const point of props.points) {
-      if (props.compact && previous !== undefined && point.time - previous > (point.maxGap || 3)) {
-        if (route.length > 1) L.polyline(route, { color: '#0f766e', weight: 3 }).addTo(overlay)
-        route = []
-      }
-      route.push([point.latitude, point.longitude])
-      previous = point.time
+  let route: LocationPoint[] = []
+  for (const point of props.points) {
+    const previous = route.at(-1)
+    if (props.compact && previous && (point.breakBefore || point.time - previous.time > (point.maxGap ?? 3))) {
+      addRoute(route)
+      route = []
     }
-    if (route.length > 1) L.polyline(route, { color: '#0f766e', weight: 3 }).addTo(overlay)
+    route.push(point)
   }
+  addRoute(route)
+
   for (const point of props.points) {
     const coordinate: L.LatLngTuple = [point.latitude, point.longitude]
     bounds.push(coordinate)
     if (props.compact && (props.points.length > 1 || props.current)) continue
-    L.circleMarker(coordinate, {
+    const marker = L.circleMarker(coordinate, {
       radius: 7,
       color: '#ffffff',
       weight: 2,
       fillColor: point.color,
       fillOpacity: 0.95,
     }).bindTooltip(`${point.label} · ${point.time.toFixed(1)}s`).addTo(overlay)
+    if (props.seekable) marker.on('click', () => emit('seek', point.time))
   }
   if (props.current) {
     const coordinate: L.LatLngTuple = [props.current.latitude, props.current.longitude]
@@ -137,13 +165,13 @@ onMounted(async () => {
   await nextTick()
   if (!containerRef.value) return
   map = L.map(containerRef.value, { zoomControl: true, attributionControl: true, zoomAnimation: false }).setView([24.8334, 102.8399], 16)
-  loadBasemap()
   L.control.scale({ imperial: false, maxWidth: 80 }).addTo(map)
   overlay = L.layerGroup().addTo(map)
   map.on('dragstart', () => { following.value = false })
   resizeObserver = new ResizeObserver(() => map?.invalidateSize({ pan: false, debounceMoveend: true }))
   resizeObserver.observe(containerRef.value)
   renderPoints()
+  loadBasemap()
 })
 
 watch(() => props.points, renderPoints, { deep: true })
