@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import axios from 'axios'
 import {
@@ -98,6 +98,15 @@ const selectedCategory = computed(() => categories.value.find(item => item.key =
 const isPlatePackage = computed(() => category.value === PLATE_CATEGORY)
 const plateStatus = ref<PlateStatus | null>(null)
 const restoringPlate = ref(false)
+const fileInputRef = ref<HTMLInputElement | null>(null)
+
+// 顶部「车牌巡检数据包」按钮：切到数据包分类并直接弹出系统文件选择器
+async function openPlatePackagePicker() {
+  if (busy.value || restoringPlate.value) return
+  await router.replace({ query: { category: PLATE_CATEGORY } })
+  await nextTick()
+  fileInputRef.value?.click()
+}
 
 interface ModuleStatus { title: string; route: string; mode: string; configured: boolean; missing: { label: string; category: string; subdir: string }[]; note: string }
 const modules = ref<Record<string, ModuleStatus>>({})
@@ -178,7 +187,7 @@ async function refreshFiles() {
 }
 
 async function restorePlateBatch() {
-  if (!plateStatus.value?.canPublish || !plateStatus.value.previous || restoringPlate.value) return
+  if (!plateStatus.value?.previous || restoringPlate.value) return
   const previous = plateStatus.value.previous.run || '原有回放'
   if (!window.confirm('恢复「' + previous + '」供所有用户查看？')) return
   restoringPlate.value = true
@@ -510,7 +519,7 @@ onMounted(async () => {
             <UploadCloud :size="20" class="text-blue-600" /> 上传素材
           </h2>
           <button type="button" class="rounded-md border border-blue-300 px-3 py-2 text-sm font-semibold text-blue-800 disabled:opacity-50"
-            :disabled="busy || restoringPlate" @click="router.replace({ query: { category: PLATE_CATEGORY } })">
+            :disabled="busy || restoringPlate" @click="openPlatePackagePicker">
             车牌巡检数据包
           </button>
         </div>
@@ -550,10 +559,9 @@ onMounted(async () => {
           <p><strong>当前回放批次</strong> {{ plateStatus?.active.run || '暂无' }}</p>
           <p v-if="plateStatus?.active.steps" class="mt-1">{{ plateStatus.active.steps }} 步路线 · {{ plateStatus.active.vehicles }} 辆车</p>
           <p v-if="plateStatus?.previous" class="mt-1">上一批 {{ plateStatus.previous.run || '原有回放' }}</p>
-          <p v-if="plateStatus && !plateStatus.canPublish" class="mt-1">当前账号可以查看批次。上传和恢复由素材发布账号操作。</p>
           <div class="mt-3 flex flex-wrap gap-2">
             <RouterLink to="/plate?view=mission" class="rounded border border-slate-300 bg-white px-3 py-2 text-blue-800">查看车牌回放</RouterLink>
-            <button v-if="plateStatus?.previous && plateStatus.canPublish" type="button" class="rounded border border-slate-300 bg-white px-3 py-2"
+            <button v-if="plateStatus?.previous" type="button" class="rounded border border-slate-300 bg-white px-3 py-2"
               :disabled="busy || restoringPlate" @click="restorePlateBatch">{{ restoringPlate ? '正在恢复' : '恢复上一批' }}</button>
           </div>
         </div>
@@ -580,8 +588,8 @@ onMounted(async () => {
         <label
           class="cursor-pointer rounded-lg border-2 border-dashed border-slate-300 p-5 text-center transition-colors hover:border-blue-400 hover:bg-blue-50/40 sm:p-8"
         >
-          <input type="file" :multiple="!isPlatePackage" :accept="isPlatePackage ? '.zip,.tar.gz,.tgz' : undefined"
-            :disabled="busy || (isPlatePackage && (!plateStatus?.canPublish || restoringPlate))" class="hidden" @change="onPick" />
+          <input ref="fileInputRef" type="file" :multiple="!isPlatePackage" :accept="isPlatePackage ? '.zip,.tar.gz,.tgz' : undefined"
+            :disabled="busy || restoringPlate" class="hidden" @change="onPick" />
           <FolderOpen :size="34" class="mx-auto text-slate-400 mb-2" />
           <p class="text-sm text-slate-500">
             {{ isPlatePackage ? '选择车牌巡检数据包（ZIP 或 TAR.GZ）' : '点击选择文件（可多选：视频 / 模型 / 图片 / 测量数据）' }}
@@ -652,7 +660,7 @@ onMounted(async () => {
         <div class="flex flex-wrap items-center gap-3 sm:gap-4">
           <button
             class="px-5 py-2.5 rounded-md bg-blue-600 text-white text-sm font-semibold hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-            :disabled="!busy && (!pendingCount || (isPlatePackage && (!plateStatus?.canPublish || restoringPlate)))"
+            :disabled="!busy && (!pendingCount || (isPlatePackage && restoringPlate))"
             @click="busy ? pauseAll() : startUpload()"
           >
             {{ busy ? '暂停全部' : isPlatePackage ? '上传并启用' : `开始上传${pendingCount ? `（${pendingCount} 个）` : ''}` }}

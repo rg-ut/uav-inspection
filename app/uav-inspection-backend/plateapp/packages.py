@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-import os
 import re
 import shutil
 import sqlite3
@@ -34,8 +33,8 @@ ARCHIVE_SUFFIXES = ('.zip', '.tar.gz', '.tgz')
 
 
 def can_publish(account):
-    names = os.getenv('UAV_PLATE_DATA_UPLOADERS', '').split(',')
-    return account['username'].casefold() in {name.strip().casefold() for name in names if name.strip()}
+    """所有已登录账号均可发布和恢复车牌巡检数据包。"""
+    return True
 
 
 def require_publisher(request):
