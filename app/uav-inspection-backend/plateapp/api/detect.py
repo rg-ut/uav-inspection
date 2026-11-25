@@ -514,3 +514,83 @@ async def plate_coverage() -> dict[str, object] | JSONResponse:
             if rviz.get(key):
                 rviz[key] = _media_versioned(prefixed(str(rviz[key])))
     return {'code': 200, 'message': 'success', 'data': payload}
+
+
+# 一份完整数据包必须具备的条目（相对 DATA_DIR）。rviz 录屏不在此列：旧批次没有它，
+# 后端会用主回放顶上（见 _fallback_rviz），缺了不算装坏。
+_REQUIRED_ENTRIES = (
+    'timeline.json',
+    'coverage.json',
+    'acceptance.json',
+    'media/replay.mp4',
+    'media/path.json',
+    'media/heatmap.png',
+    'media/poster.jpg',
+)
+
+
+def _dataset_summary() -> dict[str, Any]:
+    """当前在用的数据包：目录、来源、批次、缺了哪几项。"""
+    timeline = _load_json_file(TIMELINE_PATH) or {}
+    mission = timeline.get('mission') or {}
+    video = timeline.get('video') or {}
+    coverage = _load_json_file(COVERAGE_PATH) or {}
+    # 报「实际在放什么」而不是「文件里写了什么」：旧批次没有 rviz 段，/coverage
+    # 会临时顶上主回放视频，这里跟着取同一个结果，否则 summary 说「没有录屏」
+    # 而页面明明在放，运维会以为两边对不上。
+    rviz = coverage.get('rviz')
+    if not isinstance(rviz, dict) or not rviz:
+        rviz = _fallback_rviz() or {}
+    path = _load_json_file(PATH_PATH) or {}
+    acceptance = _load_acceptance() or {}
+
+    present = [name for name in _REQUIRED_ENTRIES if (DATA_DIR / name).is_file()]
+    cards = CARDS_DIR.is_dir() and any(CARDS_DIR.glob('*.jpg'))
+    missing = [name for name in _REQUIRED_ENTRIES if name not in present]
+    if not cards:
+        missing.insert(0, 'cards/')
+
+    return {
+        'data_dir': str(DATA_DIR),
+        'source': 'runtime' if DATA_DIR == _RUNTIME_DATA_DIR else 'packaged',
+        'runtime_dir': str(_RUNTIME_DATA_DIR),
+        'packaged_dir': str(_PACKAGED_DATA_DIR),
+        'mission': {
+            'run': mission.get('run'),
+            'id': mission.get('id'),
+            'started_at': mission.get('started_at'),
+        },
+        'video': {
+            'seconds': video.get('seconds'),
+            'offset_s': video.get('offset_s'),
+        },
+        'rviz': {
+            'run': rviz.get('run'),
+            'offset_s': rviz.get('offset_s'),
+            'fallback': bool(rviz.get('fallback')),
+        },
+        'path': {
+            'source': path.get('source'),
+            'steps': len(path.get('steps') or []),
+            # 文件不在时 /path 会用 slots + 阶段时间轴现场拼一条示意航线
+            'fallback': not PATH_PATH.is_file(),
+        },
+        'coverage_map': (coverage.get('source') or {}).get('map_dir'),
+        'cards': len(list(CARDS_DIR.glob('*.jpg'))) if cards else 0,
+        'vehicles': len(acceptance.get('vehicles') or []),
+        'present': present,
+        'missing': missing,
+    }
+
+
+@router.get('/dataset')
+async def plate_dataset() -> dict[str, object]:
+    """回放数据包自检：装完数据后 curl 一次就知道网站在用哪一批、缺什么。
+
+    为什么要单开一个接口：数据包要人工拷进 UAV_DATA_DIR 再重启才生效，而
+    DATA_DIR 在导入时就定了（运行期目录里只要有任何一份 JSON 就整目录切过去），
+    所以「拷漏一份」不会报错，只会让页面静默少一块；反过来，若运行期目录是空的，
+    后端会安静地退回镜像里的旧批次，页面上看不出区别，只有顶栏的任务编号不同。
+    这里把目录 / 来源 / 批次 / 缺失项一次说清，避免靠肉眼比对顶栏猜。
+    """
+    return {'code': 200, 'message': 'success', 'data': _dataset_summary()}

@@ -685,10 +685,20 @@ function narrate(ev: { t: number; kind: string; text: string }) {
   return { title: ev.kind === 'fsm' ? '状态推进' : '过程记录', text: cleanRaw(s) || '—' }
 }
 
-/** 车名 → 车牌号，给日志里的人话补一句「哪辆车」 */
+/**
+ * 车名 → 车牌号，给日志里的人话补一句「哪辆车」。
+ *
+ * 以验收结果为准，path.json 的 plate 只作兜底：path.json 的车辆表抄自
+ * inspect_r*.yaml（起飞前的 spawn 清单），那份清单的车牌不一定与实车一致。
+ * 2026-11-21 那批实测：car_0 的 yaml 写 皖AB3618，实车、取证缩略图与验收结果
+ * 都是 皖BXH618（其余 6 辆两边一致）。验收结果与卡片同源，故以它覆盖。
+ */
 const carPlate = computed(() => {
   const m: Record<string, string> = {}
   for (const c of pathData.value?.cars ?? []) m[c.name] = c.plate
+  for (const v of acceptance.value?.vehicles ?? []) {
+    if (v.car && v.plate) m[v.car] = v.plate
+  }
   return m
 })
 
