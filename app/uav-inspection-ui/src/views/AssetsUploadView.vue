@@ -63,6 +63,7 @@ interface CompleteData {
   size: number
   chunks?: number
   deduplicated?: string
+  batch?: PlateBatch
 }
 
 interface BatchData {
@@ -73,6 +74,10 @@ interface BatchData {
 }
 
 // 小文件（≤8MB）走原批量直传（多文件一次请求更快），大文件走分片
+const PLATE_CATEGORY = 'plate-data-package'
+interface PlateBatch { id?: string; run: string | null; steps?: number; vehicles?: number }
+interface PlateStatus { active: PlateBatch; previous: PlateBatch | null; canPublish: boolean }
+
 const SMALL_BATCH_LIMIT = 8 * 1024 * 1024
 const CHUNK_TIMEOUT = 120_000
 const COMPLETE_TIMEOUT = 660_000
@@ -90,6 +95,9 @@ const message = reactive({ kind: '' as '' | 'ok' | 'err', text: '' })
 const files = ref<FileEntry[]>([])
 const filesRoot = ref('')
 const selectedCategory = computed(() => categories.value.find(item => item.key === category.value))
+const isPlatePackage = computed(() => category.value === PLATE_CATEGORY)
+const plateStatus = ref<PlateStatus | null>(null)
+const restoringPlate = ref(false)
 
 interface ModuleStatus { title: string; route: string; mode: string; configured: boolean; missing: { label: string; category: string; subdir: string }[]; note: string }
 const modules = ref<Record<string, ModuleStatus>>({})
@@ -132,7 +140,7 @@ function applyUploadQuery() {
   const requested = route.query.category
   if (typeof requested === 'string' && categories.value.some(item => item.key === requested)) {
     category.value = requested
-    subdir.value = categories.value.find(item => item.key === requested)?.expected_filename ? '' : typeof route.query.subdir === 'string' ? route.query.subdir : ''
+    subdir.value = requested === PLATE_CATEGORY || categories.value.find(item => item.key === requested)?.expected_filename ? '' : typeof route.query.subdir === 'string' ? route.query.subdir : ''
   }
 }
 
@@ -156,12 +164,33 @@ async function loadCategories() {
 
 async function refreshFiles() {
   if (!category.value) return
+  if (isPlatePackage.value) {
+    const { data } = await http.get<PlateStatus>('/assets/plate-data')
+    plateStatus.value = data
+    return
+  }
   const res = await http.get<{ root: string; count: number; files: FileEntry[] }>('/assets/files', {
     category: category.value,
     subdir: subdir.value,
   })
   files.value = res.data.files
   filesRoot.value = res.data.root
+}
+
+async function restorePlateBatch() {
+  if (!plateStatus.value?.canPublish || !plateStatus.value.previous || restoringPlate.value) return
+  const previous = plateStatus.value.previous.run || '原有回放'
+  if (!window.confirm('恢复「' + previous + '」供所有用户查看？')) return
+  restoringPlate.value = true
+  try {
+    await http.post('/assets/plate-data/restore', {})
+    await refreshFiles()
+    message.kind = 'ok'
+    message.text = '已恢复上一批车牌巡检数据。'
+  } catch (failure) {
+    message.kind = 'err'
+    message.text = uploadErrorMessage(failure)
+  } finally { restoringPlate.value = false }
 }
 
 function onPick(event: Event) {
@@ -298,13 +327,14 @@ async function startTask(t: UploadTask) {
 
     const form = new FormData()
     form.append('upload_id', t.uploadId)
+    if (t.category === PLATE_CATEGORY) t.note = '正在校验数据并切换批次…'
     const done = await http.postForm<CompleteData>('/assets/upload/complete', form, {
       timeout: COMPLETE_TIMEOUT,
       signal: t.controller.signal,
     })
     t.status = 'done'
     t.uploaded = t.total
-    t.note = done.data.deduplicated ? done.data.deduplicated : `合并完成（${done.data.chunks} 个分片）`
+    t.note = done.data.batch ? '已校验并启用：' + done.data.batch.run : done.data.deduplicated ? done.data.deduplicated : `合并完成（${done.data.chunks} 个分片）`
     localStorage.removeItem(localKey)
   } catch (error) {
     if (axios.isCancel(error)) {
@@ -374,13 +404,16 @@ async function startUpload() {
     message.text = '没有待上传的文件'
     return
   }
+  if (isPlatePackage.value && (queue.length !== 1 || !/\.(zip|tar\.gz|tgz)$/i.test(queue[0].file.name))) {
+    message.kind = 'err'; message.text = '每次请选择一份交付 ZIP 或 .tar.gz 数据包。'; return
+  }
   if (selectedCategory.value?.expected_filename && (queue.length > 1 || !queue[0]?.file.name.toLowerCase().endsWith('.pt'))) {
     message.kind = 'err'; message.text = '每次请选择一个可信的 .pt 权重，系统会按模块要求保存文件名。'; return
   }
   queue.forEach(t => {
     t.category = category.value
-    t.subdir = subdir.value.trim()
-    t.overwrite = overwrite.value
+    t.subdir = isPlatePackage.value ? '' : subdir.value.trim()
+    t.overwrite = !isPlatePackage.value && overwrite.value
   })
   busy.value = true
   stopping.value = false
@@ -388,8 +421,8 @@ async function startUpload() {
   message.text = ''
   checkResult.value = null
   try {
-    const smalls = queue.filter(t => t.file.size <= SMALL_BATCH_LIMIT)
-    const larges = queue.filter(t => t.file.size > SMALL_BATCH_LIMIT)
+    const smalls = queue.filter(t => t.category !== PLATE_CATEGORY && t.file.size <= SMALL_BATCH_LIMIT)
+    const larges = queue.filter(t => t.category === PLATE_CATEGORY || t.file.size > SMALL_BATCH_LIMIT)
     if (smalls.length && !stopping.value) await uploadSmallBatch(smalls)
     for (const t of larges) {
       if (stopping.value) break
@@ -472,9 +505,15 @@ onMounted(async () => {
         </div>
       </section>
       <section class="flex flex-col gap-5 rounded-lg border border-slate-200 bg-white p-4 shadow-sm sm:p-6">
-        <h2 class="text-lg font-bold text-slate-800 flex items-center gap-2">
-          <UploadCloud :size="20" class="text-blue-600" /> 上传素材
-        </h2>
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <h2 class="text-lg font-bold text-slate-800 flex items-center gap-2">
+            <UploadCloud :size="20" class="text-blue-600" /> 上传素材
+          </h2>
+          <button type="button" class="rounded-md border border-blue-300 px-3 py-2 text-sm font-semibold text-blue-800 disabled:opacity-50"
+            :disabled="busy || restoringPlate" @click="router.replace({ query: { category: PLATE_CATEGORY } })">
+            车牌巡检数据包
+          </button>
+        </div>
 
         <div class="grid grid-cols-1 md:grid-cols-2 gap-5">
           <label class="flex flex-col gap-1.5 text-sm font-medium text-slate-600">
@@ -489,7 +528,7 @@ onMounted(async () => {
               </option>
             </select>
           </label>
-          <label class="flex flex-col gap-1.5 text-sm font-medium text-slate-600">
+          <label v-if="!isPlatePackage" class="flex flex-col gap-1.5 text-sm font-medium text-slate-600">
             子目录（可选，如任务名，留空传到分类根）
             <input
               v-model="subdir"
@@ -503,9 +542,21 @@ onMounted(async () => {
         </div>
 
         <p v-if="selectedCategory" class="rounded-md bg-blue-50 p-3 text-sm text-blue-900" role="status">
-          <span class="block break-all">目标目录：{{ selectedCategory.target }}</span>
+          <span v-if="!isPlatePackage" class="block break-all">目标目录：{{ selectedCategory.target }}</span>
           <span v-if="selectedCategory.hint" class="mt-1 block">{{ selectedCategory.hint }}</span>
         </p>
+
+        <div v-if="isPlatePackage" class="rounded-md border border-slate-200 bg-slate-50 p-3 text-sm text-slate-700">
+          <p><strong>当前回放批次</strong> {{ plateStatus?.active.run || '暂无' }}</p>
+          <p v-if="plateStatus?.active.steps" class="mt-1">{{ plateStatus.active.steps }} 步路线 · {{ plateStatus.active.vehicles }} 辆车</p>
+          <p v-if="plateStatus?.previous" class="mt-1">上一批 {{ plateStatus.previous.run || '原有回放' }}</p>
+          <p v-if="plateStatus && !plateStatus.canPublish" class="mt-1">当前账号可以查看批次。上传和恢复由素材发布账号操作。</p>
+          <div class="mt-3 flex flex-wrap gap-2">
+            <RouterLink to="/plate?view=mission" class="rounded border border-slate-300 bg-white px-3 py-2 text-blue-800">查看车牌回放</RouterLink>
+            <button v-if="plateStatus?.previous && plateStatus.canPublish" type="button" class="rounded border border-slate-300 bg-white px-3 py-2"
+              :disabled="busy || restoringPlate" @click="restorePlateBatch">{{ restoringPlate ? '正在恢复' : '恢复上一批' }}</button>
+          </div>
+        </div>
 
         <div v-if="selectedModule" class="rounded-md border border-blue-200 bg-blue-50 p-3 text-sm text-blue-950">
           <p>{{ selectedModule.note }}</p>
@@ -521,7 +572,7 @@ onMounted(async () => {
           </div>
         </div>
 
-        <label class="flex cursor-pointer select-none items-start gap-2 text-sm leading-5 text-slate-600 sm:items-center">
+        <label v-if="!isPlatePackage" class="flex cursor-pointer select-none items-start gap-2 text-sm leading-5 text-slate-600 sm:items-center">
           <input v-model="overwrite" type="checkbox" class="h-4 w-4 accent-blue-600" />
           覆盖同名文件（默认关闭：同名文件跳过不覆盖）
         </label>
@@ -529,10 +580,11 @@ onMounted(async () => {
         <label
           class="cursor-pointer rounded-lg border-2 border-dashed border-slate-300 p-5 text-center transition-colors hover:border-blue-400 hover:bg-blue-50/40 sm:p-8"
         >
-          <input type="file" multiple class="hidden" @change="onPick" />
+          <input type="file" :multiple="!isPlatePackage" :accept="isPlatePackage ? '.zip,.tar.gz,.tgz' : undefined"
+            :disabled="busy || (isPlatePackage && (!plateStatus?.canPublish || restoringPlate))" class="hidden" @change="onPick" />
           <FolderOpen :size="34" class="mx-auto text-slate-400 mb-2" />
           <p class="text-sm text-slate-500">
-            点击选择文件（可多选：视频 / 模型 / 图片 / 测量数据）
+            {{ isPlatePackage ? '选择车牌巡检数据包（ZIP 或 TAR.GZ）' : '点击选择文件（可多选：视频 / 模型 / 图片 / 测量数据）' }}
           </p>
           <p class="text-xs text-slate-400 mt-1">
             大文件自动分片上传，中断后可继续，刷新页面不丢进度
@@ -568,6 +620,8 @@ onMounted(async () => {
                 <template v-else-if="t.totalChunks > 1">分片 {{ t.received.length }} / {{ t.totalChunks }}{{ t.note ? ` · ${t.note}` : '' }}</template>
                 <template v-else>{{ t.note }}</template>
               </span>
+              <button v-if="t.status === 'waiting'" type="button" class="text-xs text-slate-600 hover:text-red-700"
+                :disabled="busy" @click="tasks = tasks.filter(item => item.key !== t.key)">移除</button>
               <button
                 v-if="t.status === 'uploading'"
                 class="flex items-center gap-1 text-xs font-medium text-slate-500 hover:text-amber-600"
@@ -598,10 +652,10 @@ onMounted(async () => {
         <div class="flex flex-wrap items-center gap-3 sm:gap-4">
           <button
             class="px-5 py-2.5 rounded-md bg-blue-600 text-white text-sm font-semibold hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-            :disabled="busy ? false : !pendingCount"
+            :disabled="!busy && (!pendingCount || (isPlatePackage && (!plateStatus?.canPublish || restoringPlate)))"
             @click="busy ? pauseAll() : startUpload()"
           >
-            {{ busy ? '暂停全部' : `开始上传${pendingCount ? `（${pendingCount} 个）` : ''}` }}
+            {{ busy ? '暂停全部' : isPlatePackage ? '上传并启用' : `开始上传${pendingCount ? `（${pendingCount} 个）` : ''}` }}
           </button>
           <p v-if="activeTask" class="text-xs text-slate-400">
             正在传：{{ activeTask.file.name }}
@@ -612,7 +666,7 @@ onMounted(async () => {
         </div>
       </section>
 
-      <section class="flex flex-col gap-4 rounded-lg border border-slate-200 bg-white p-4 shadow-sm sm:p-6">
+      <section v-if="!isPlatePackage" class="flex flex-col gap-4 rounded-lg border border-slate-200 bg-white p-4 shadow-sm sm:p-6">
         <div class="flex items-center justify-between">
           <h2 class="text-lg font-bold text-slate-800 flex items-center gap-2">
             <FolderOpen :size="20" class="text-emerald-600" /> 当前目录文件

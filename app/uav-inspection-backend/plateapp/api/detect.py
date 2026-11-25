@@ -8,9 +8,10 @@ from typing import Any
 import cv2
 import numpy as np
 from fastapi import APIRouter, File, HTTPException, UploadFile
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 
+from plateapp import packages
 from plateapp.detector import plate_detector
 from plateapp.recognizer import plate_recognizer
 from deployment_paths import backend_path
@@ -64,12 +65,15 @@ def _versioned(url: str, base_dir: Path) -> str:
         return url
 
 
-def _media_versioned(url: str) -> str:
-    return _versioned(url, MEDIA_DIR)
+def _replay_file(path: Path, revision: str | None) -> Path:
+    return packages.revision_root(revision) / path.relative_to(DATA_DIR) if revision else path
 
 
-def _cards_versioned(url: str) -> str:
-    return _versioned(url, CARDS_DIR)
+def _replay_url(url: str, group: str, revision: str | None) -> str:
+    if revision:
+        filename = url.partition('?')[0].rsplit('/', 1)[-1]
+        return prefixed(f'/api/v1/plate/revisions/{revision}/{group}/{filename}')
+    return _versioned(prefixed(url), MEDIA_DIR if group == 'media' else CARDS_DIR)
 
 # 视频检测是同步执行的，必须有明确上限，否则一个大文件就能把工作进程占满。
 MAX_VIDEO_FRAMES = 40
@@ -89,13 +93,8 @@ class PlateConfigRequest(BaseModel):
     max_plates: int | None = None
 
 
-def _load_acceptance() -> dict[str, Any] | None:
-    if not ACCEPTANCE_PATH.is_file():
-        return None
-    try:
-        return json.loads(ACCEPTANCE_PATH.read_text(encoding='utf-8'))
-    except Exception:
-        return None
+def _load_acceptance(revision=None) -> dict[str, Any] | None:
+    return _load_json_file(_replay_file(ACCEPTANCE_PATH, revision))
 
 
 def _load_json_file(path: Path) -> dict[str, Any] | None:
@@ -263,7 +262,7 @@ async def plate_health() -> dict[str, object]:
             'service_status': 'running',
             'detector_loaded': available,
             'recognizer_available': status['available'],
-            'acceptance_available': ACCEPTANCE_PATH.is_file(),
+            'acceptance_available': _replay_file(ACCEPTANCE_PATH, packages.current_revision()).is_file(),
         },
     }
 
@@ -431,26 +430,34 @@ async def plate_detect_video(
 # 不关掉自动响应模型的话 FastAPI 会在导入期就报「Invalid args for response field」。
 @router.get('/acceptance', response_model=None)
 async def plate_acceptance() -> dict[str, object] | JSONResponse:
+    return _acceptance_response(packages.current_revision())
+
+
+def _acceptance_response(revision) -> dict[str, object] | JSONResponse:
     """离线验收结果回放：没有模型权重时，页面仍有可展示的真实数据。"""
-    payload = _load_acceptance()
+    payload = _load_acceptance(revision)
     if payload is None:
         # 缺数据既要让页面看得懂（体内 code），也要让网关/监控判得对（HTTP 404）。
         return JSONResponse(status_code=404, content={
             'code': 404, 'message': '未找到验收回放数据', 'data': {'available': False}})
     for vehicle in payload.get('vehicles', []):
         card = vehicle.get('card')
-        vehicle['card_url'] = _cards_versioned(prefixed(f'/api/v1/plate/cards/{card}')) if card else None
+        vehicle['card_url'] = _replay_url(f'/api/v1/plate/cards/{card}', 'cards', revision) if card else None
     return {'code': 200, 'message': 'success', 'data': payload}
 
 
 @router.get('/replay', response_model=None)
 async def plate_replay() -> dict[str, object] | JSONResponse:
+    return _replay_response(packages.current_revision())
+
+
+def _replay_response(revision) -> dict[str, object] | JSONResponse:
     """任务过程回放：阶段时间轴 + 回放视频地址 + 关键事件。
 
     数据由 ai/analysis/v4e_timeline_20261115.py 从 driver.log 与 fsm.json 解析，
     视频是 watch_raw.mp4 压到 854x480 / CRF 32（200 MB → 2.6 MB）。
     """
-    payload = _load_json_file(TIMELINE_PATH)
+    payload = _load_json_file(_replay_file(TIMELINE_PATH, revision))
     if payload is None:
         return JSONResponse(status_code=404, content={
             'code': 404, 'message': '未找到回放数据', 'data': {'available': False}})
@@ -458,29 +465,33 @@ async def plate_replay() -> dict[str, object] | JSONResponse:
     video = payload.get('video') or {}
     for key in ('src', 'poster'):
         if video.get(key):
-            video[key] = _media_versioned(prefixed(str(video[key])))
+            video[key] = _replay_url(str(video[key]), 'media', revision)
     payload['video'] = video
 
     for phase in payload.get('phases') or []:
         if phase.get('cover'):
-            phase['cover'] = _media_versioned(prefixed(str(phase['cover'])))
+            phase['cover'] = _replay_url(str(phase['cover']), 'media', revision)
 
     return {'code': 200, 'message': 'success', 'data': payload}
 
 
 @router.get('/path', response_model=None)
 async def plate_path() -> dict[str, object] | JSONResponse:
+    return _path_response(packages.current_revision())
+
+
+def _path_response(revision) -> dict[str, object] | JSONResponse:
     """逐腿路径与视点：从任务日志的 GOTO 序列重建，供四宫格第四格画俯视路径图。
 
     来源：~/runs/mission_20261116_120348 的 stage2_r1.log / stage2_r2.log / inspect_r*.yaml。
     计算口径：front/* 视点按车轴方位前推 d 米复算平面位置；transit/* 平面取车坐标
     （实际在车正上方，图上不体现高度）；FLEET 取场地中心。高度一律不画。
     """
-    payload = _load_json_file(PATH_PATH)
+    payload = _load_json_file(_replay_file(PATH_PATH, revision))
     if payload is None:
         # 没有实机 GOTO 日志时用仓库自带批次现场重建一条示意航线，
         # 让第四格仍有随时间推进的内容，前端也不再连打两个 404。
-        payload = _fallback_path()
+        payload = _fallback_path() if revision is None else None
     if payload is None:
         return JSONResponse(status_code=404, content={
             'code': 404, 'message': '未找到路径数据', 'data': {'available': False}})
@@ -489,28 +500,52 @@ async def plate_path() -> dict[str, object] | JSONResponse:
 
 @router.get('/coverage', response_model=None)
 async def plate_coverage() -> dict[str, object] | JSONResponse:
+    return _coverage_response(packages.current_revision())
+
+
+def _coverage_response(revision) -> dict[str, object] | JSONResponse:
     """L4 覆盖质量：可观测区格数、各帧数门限占比、分排统计、15 车位质量。
 
     分母口径：贴墙矩形（x±13.7 / y±9.2）再扣掉 7 辆车体遮挡区。
     不扣车体会把物理上必然看不到的车底格算进分母，把覆盖率压低约 3 个点。
     """
-    payload = _load_json_file(COVERAGE_PATH)
+    payload = _load_json_file(_replay_file(COVERAGE_PATH, revision))
     if payload is None:
         return JSONResponse(status_code=404, content={
             'code': 404, 'message': '未找到覆盖质量数据', 'data': {'available': False}})
 
     if payload.get('image'):
-        payload['image'] = _media_versioned(prefixed(str(payload['image'])))
+        payload['image'] = _replay_url(str(payload['image']), 'media', revision)
     # RViz 全流程录屏（2026-11-16 加）：同样要带内容戳，否则换批后浏览器放旧片。
     # 仓库自带批次没有这段元数据时回退到主回放视频，避免第 2、3 格空着。
     rviz = payload.get('rviz')
     if not isinstance(rviz, dict):
-        fallback = _fallback_rviz()
+        fallback = _fallback_rviz() if revision is None else None
         if fallback is not None:
             payload['rviz'] = fallback
             rviz = fallback
     if isinstance(rviz, dict):
         for key in ('src', 'poster'):
             if rviz.get(key):
-                rviz[key] = _media_versioned(prefixed(str(rviz[key])))
+                rviz[key] = _replay_url(str(rviz[key]), 'media', revision)
     return {'code': 200, 'message': 'success', 'data': payload}
+
+
+@router.get('/replay-bundle')
+def plate_replay_bundle():
+    """Use one revision for all four views, including during a simultaneous update."""
+    revision = packages.current_revision()
+    responses = {'acceptance': _acceptance_response(revision), 'replay': _replay_response(revision),
+                 'coverage': _coverage_response(revision), 'path': _path_response(revision)}
+    return {'code': 200, 'data': {key: value['data'] if isinstance(value, dict) else None
+                                 for key, value in responses.items()}}
+
+
+@router.api_route('/revisions/{revision}/{group}/{filename}', methods=['GET', 'HEAD'])
+def plate_revision_file(revision: str, group: str, filename: str):
+    if group not in {'media', 'cards'} or not packages.NAME.fullmatch(filename):
+        raise HTTPException(404, '未找到回放素材。')
+    path = packages.revision_root(revision) / group / filename
+    if not path.is_file():
+        raise HTTPException(404, '未找到回放素材。')
+    return FileResponse(path)

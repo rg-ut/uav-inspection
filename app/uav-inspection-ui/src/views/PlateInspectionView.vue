@@ -858,12 +858,23 @@ const budgetUsedPct = computed(() => {
   return Math.min(100, Math.round((budgetSpent.value / b.budget_s) * 100))
 })
 
-watch(activeTab, (tab) => {
-  if (tab !== 'mission') return
-  if (!replay.value && !loadingReplay.value) void loadReplay()
-  if (!coverage.value && !loadingCoverage.value) void loadCoverage()
-  if (!pathData.value && !loadingPath.value) void loadPath()
-}, { immediate: true })
+async function loadReplayBundle() {
+  loadingAcceptance.value = loadingReplay.value = loadingCoverage.value = loadingPath.value = true
+  try {
+    const { data } = await plateApi.getReplayBundle()
+    acceptance.value = data.acceptance?.available ? data.acceptance : null
+    replay.value = data.replay
+    coverage.value = data.coverage
+    pathData.value = data.path?.steps?.length ? data.path : null
+    if (!replay.value) replayError.value = '暂无可播放的车牌巡检录像。'
+  } catch {
+    // Retain playback when the UI is running against an older backend.
+    loadingAcceptance.value = loadingReplay.value = loadingCoverage.value = loadingPath.value = false
+    await Promise.all([loadAcceptance(), loadReplay(), loadCoverage(), loadPath()])
+  } finally {
+    loadingAcceptance.value = loadingReplay.value = loadingCoverage.value = loadingPath.value = false
+  }
+}
 
 // 从首页再次点入口而当前已经在本页时，query 变化要能切过去（含旧参数 replay / coverage）
 watch(() => route.query.view, (view) => {
@@ -871,9 +882,9 @@ watch(() => route.query.view, (view) => {
   if (next) activeTab.value = next
 })
 
-onMounted(async () => {
-  await refreshHealth()
-  await loadAcceptance()
+onMounted(() => {
+  void refreshHealth()
+  void loadReplayBundle()
 })
 
 // ---------------- 三栏工作台：批次 KPI / 左下角页内导航 ----------------

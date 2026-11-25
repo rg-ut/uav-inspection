@@ -20,11 +20,13 @@ import uuid
 import asyncio
 from pathlib import Path
 
-from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse
 
 from deployment_paths import DATA_ROOT, backend_path
 from browser_video import store_video
+from authapp.api import require_account
+from plateapp import packages as plate_packages
 
 from assetsapp.readiness import router as readiness_router
 
@@ -32,6 +34,7 @@ router = APIRouter()
 router.include_router(readiness_router)
 
 CHUNK_SIZE = int(os.environ.get('UAV_CHUNK_SIZE', 8 * 1024 * 1024))
+_plate_complete_lock = asyncio.Lock()
 
 # 分类 → 02-data 内目标目录（uav-inspection-backend 下为各模块数据/模型根，project 级为测量与玫瑰图片）
 CATEGORIES: dict[str, Path] = {
@@ -56,6 +59,7 @@ CATEGORIES: dict[str, Path] = {
     'roof-reports': backend_path('roofdata', 'reports'),
     'pest-data': backend_path('pestdata'),
     'tree-instances': DATA_ROOT / 'prelabel_output' / 'instances_20260715',
+    plate_packages.CATEGORY: plate_packages.ROOT,
 }
 
 MODEL_FILENAMES = {
@@ -88,6 +92,7 @@ def _publish(temporary, destination, category, name):
         temporary.replace(destination)
 
 CATEGORY_HINTS = {
+    plate_packages.CATEGORY: '每次选择一份交付 ZIP 或原始 .tar.gz。通过校验后启用该批次，上一批可恢复。',
     **{key: f'文件名必须为 {name}，子目录留空。上传可信的训练权重后重新检查模块。' for key, name in MODEL_FILENAMES.items()},
     'heatmap-model': '上传 renliu.pt，子目录留空；还需在服务器安装 AI 推理依赖。',
     'wall-media': '此目录供旧回放工具使用。新版外墙工作台请使用上方“上传外墙任务”，视频会绑定当前账号并生成任务。',
@@ -164,6 +169,7 @@ async def list_categories():
                 ('roof-reports', '屋顶离线检测结果与报告'),
                 ('pest-data', '病虫害回放视频 / 轨迹 / 报告'),
                 ('tree-instances', '乔木测量实例（summary / CSV）'),
+                (plate_packages.CATEGORY, '车牌巡检数据包（ZIP / TAR.GZ）'),
             )
         ],
     }
@@ -171,6 +177,8 @@ async def list_categories():
 
 @router.get('/files')
 async def list_files(category: str, subdir: str = ''):
+    if category == plate_packages.CATEGORY:
+        return {'code': 200, 'data': {'root': '车牌巡检数据包', 'count': 0, 'files': []}}
     base = CATEGORIES.get(category)
     if base is None:
         raise HTTPException(status_code=422, detail=f'未知分类：{category}')
@@ -203,6 +211,8 @@ async def upload_assets(
     base = CATEGORIES.get(category)
     if base is None:
         raise HTTPException(status_code=422, detail=f'未知分类：{category}')
+    if category == plate_packages.CATEGORY:
+        raise HTTPException(422, '车牌巡检数据包请使用分片上传。')
     target_dir = base / _safe_subdir(subdir)
     target_dir.mkdir(parents=True, exist_ok=True)
 
@@ -271,12 +281,19 @@ async def upload_init(
     if size <= 0:
         raise HTTPException(status_code=422, detail='size 必须为正')
     name = _safe_name(filename)
+    publisher = None
+    if category == plate_packages.CATEGORY:
+        publisher = plate_packages.require_publisher(request)['id']
+        if not name.lower().endswith(plate_packages.ARCHIVE_SUFFIXES) or subdir.strip():
+            raise HTTPException(422, '请选择交付 ZIP 或 .tar.gz 数据包，子目录留空。')
+        if size > plate_packages.MAX_UPLOAD:
+            raise HTTPException(413, '车牌巡检数据包不能超过 512 MB。')
     _validate_model_target(category, subdir, name)
     target_dir = base / _safe_subdir(subdir)
     destination = target_dir / _target_name(category, name)
 
     # 秒传：同名同大小且不覆盖，直接命中
-    if destination.exists() and destination.stat().st_size == size and not overwrite:
+    if publisher is None and destination.exists() and destination.stat().st_size == size and not overwrite:
         return {'code': 200, 'data': {'mode': 'instant', 'path': str(destination), 'size': size}}
 
     upload_id = uuid.uuid4().hex
@@ -289,6 +306,7 @@ async def upload_init(
         'size': size,
         'overwrite': overwrite,
         'chunk_size': CHUNK_SIZE,
+        'owner': publisher,
     }
     (workdir / 'meta.json').write_text(json.dumps(meta, ensure_ascii=False))
     total_chunks = (size + CHUNK_SIZE - 1) // CHUNK_SIZE
@@ -305,8 +323,35 @@ async def upload_init(
     }}
 
 
+def _authorize_upload(request, meta):
+    if meta['category'] == plate_packages.CATEGORY:
+        if plate_packages.require_publisher(request)['id'] != meta.get('owner'):
+            raise HTTPException(403, '此上传任务属于其他账号。')
+
+
+@router.get('/plate-data')
+def plate_data_status(account=Depends(require_account)):
+    from plateapp.api.detect import TIMELINE_PATH, _load_json_file
+
+    row = plate_packages.selection()
+    legacy = {'run': ((_load_json_file(TIMELINE_PATH) or {}).get('mission') or {}).get('run')}
+    active, previous = row if row else (None, None)
+    return {'code': 200, 'data': {
+        'active': plate_packages.status(active) if active else legacy,
+        'previous': (plate_packages.status(previous) if previous else legacy) if row else None,
+        'canPublish': plate_packages.can_publish(account),
+    }}
+
+
+@router.post('/plate-data/restore')
+def restore_plate_data(request: Request):
+    plate_packages.require_publisher(request)
+    plate_packages.restore()
+    return {'code': 200, 'data': {'restored': True}}
+
+
 @router.get('/upload/status')
-async def upload_status(upload_id: str):
+async def upload_status(request: Request, upload_id: str):
     workdir = _upload_dir(upload_id)
     if not workdir.is_dir():
         raise HTTPException(status_code=404, detail='uploadId 不存在（可能已合并或过期）')
@@ -314,7 +359,9 @@ async def upload_status(upload_id: str):
     if not meta_path.is_file():
         raise HTTPException(status_code=404, detail='uploadId 不存在')
     meta = json.loads(meta_path.read_text())
-    received = sorted(_part_index(p) for p in workdir.glob('*.part'))
+    _authorize_upload(request, meta)
+    completed = meta['category'] == plate_packages.CATEGORY and (workdir / 'receipt.json').is_file()
+    received = list(range((meta['size'] + meta['chunk_size'] - 1) // meta['chunk_size'])) if completed else sorted(_part_index(p) for p in workdir.glob('*.part'))
     return {'code': 200, 'data': {
         'uploadId': upload_id,
         'received': received,
@@ -339,6 +386,7 @@ async def upload_chunk(
     if index < 0:
         raise HTTPException(status_code=422, detail='非法分片号')
     meta = json.loads(meta_path.read_text())
+    _authorize_upload(request, meta)
     total_chunks = (meta['size'] + meta['chunk_size'] - 1) // meta['chunk_size']
     if index >= total_chunks:
         raise HTTPException(status_code=422, detail=f'分片号越界（共 {total_chunks} 片）')
@@ -367,8 +415,20 @@ async def upload_complete(request: Request, upload_id: str = Form(...)):
     workdir = _upload_dir(upload_id)
     meta_path = workdir / 'meta.json'
     if not meta_path.is_file():
-        raise HTTPException(status_code=404, detail='uploadId 不存在')
+        raise HTTPException(404, 'uploadId 不存在')
     meta = json.loads(meta_path.read_text())
+    _authorize_upload(request, meta)
+    if meta['category'] == plate_packages.CATEGORY:
+        # Two retries of the same upload must not remove each other's parts.
+        async with _plate_complete_lock:
+            return await _complete_upload(workdir, upload_id, meta)
+    return await _complete_upload(workdir, upload_id, meta)
+
+
+async def _complete_upload(workdir, upload_id, meta):
+    plate_package = meta['category'] == plate_packages.CATEGORY
+    if plate_package and (receipt := workdir / 'receipt.json').is_file():
+        return {'code': 200, 'data': json.loads(receipt.read_text(encoding='utf-8'))}
     base = CATEGORIES.get(meta['category'])
     target_dir = base / _safe_subdir(meta['subdir'])
     target_dir.mkdir(parents=True, exist_ok=True)
@@ -387,7 +447,7 @@ async def upload_complete(request: Request, upload_id: str = Form(...)):
     total = sum(p.stat().st_size for p in parts)
     if total != size:
         raise HTTPException(status_code=409, detail=f'分片总大小 {total} ≠ 声明 {size}')
-    if destination.exists() and not meta['overwrite']:
+    if not plate_package and destination.exists() and not meta['overwrite']:
         shutil.rmtree(workdir, ignore_errors=True)
         return {'code': 200, 'data': {'path': str(destination), 'size': destination.stat().st_size,
                                       'deduplicated': '已存在同名文件（未开启覆盖），分片已清理'}}
@@ -400,10 +460,19 @@ async def upload_complete(request: Request, upload_id: str = Form(...)):
                 for part in parts:
                     with part.open('rb') as src:
                         shutil.copyfileobj(src, out)
+            if plate_package:
+                return plate_packages.activate(tmp_target, meta['filename'], upload_id)
             _publish(tmp_target, destination, meta['category'], meta['filename'])
         finally:
             tmp_target.unlink(missing_ok=True)
-    await asyncio.to_thread(merge)
+    batch = await asyncio.to_thread(merge)
+    if plate_package:
+        from wallapp.intake import write_atomic
+        result = {'path': meta['filename'], 'size': size, 'chunks': total_chunks, 'batch': batch}
+        write_atomic(workdir / 'receipt.json', json.dumps(result, ensure_ascii=False).encode('utf-8'))
+        for part in parts:
+            part.unlink(missing_ok=True)
+        return {'code': 200, 'data': result}
     shutil.rmtree(workdir, ignore_errors=True)
     return {'code': 200, 'data': {'path': str(destination), 'size': destination.stat().st_size,
                                   'chunks': total_chunks}}
