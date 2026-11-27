@@ -5,6 +5,8 @@ from fastapi import FastAPI, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, StreamingResponse
+from starlette.datastructures import Headers, MutableHeaders
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from deployment_paths import DATA_ROOT, PROJECT_ROOT, backend_path, project_path
 from deployment_readiness import MODEL_PATHS, module_status
 from optional_inference import inference_dependencies_available
@@ -42,6 +44,54 @@ async def lifespan(_app):
 
 app = FastAPI(title='园区无人机巡检系统', lifespan=lifespan)
 
+
+class ETagNotModifiedMiddleware:
+    """对带 ETag 的 200 响应处理 If-None-Match（协商缓存）。
+
+    FileResponse 会给出 ETag/Last-Modified 但不比对请求头；入口页声明 no-cache 后，
+    浏览器每次都会带 If-None-Match 回来，这里回 304 可免去重复下载 HTML。
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope['type'] != 'http':
+            await self.app(scope, receive, send)
+            return
+        inm = Headers(scope=scope).get('if-none-match')
+        if not inm:
+            await self.app(scope, receive, send)
+            return
+        not_modified = False
+
+        async def send_wrapper(message: Message) -> None:
+            nonlocal not_modified
+            if not_modified:
+                return  # 已回 304，丢弃下游继续发出的正文
+            if message['type'] == 'http.response.start':
+                headers = MutableHeaders(scope=message)
+                etag = headers.get('etag')
+                if message['status'] == 200 and etag and self._matches(inm, etag):
+                    not_modified = True
+                    message['status'] = 304
+                    for key in ('content-length', 'content-type', 'content-encoding'):
+                        if key in headers:
+                            del headers[key]
+                    await send(message)
+                    await send({'type': 'http.response.body', 'body': b''})
+                    return
+            await send(message)
+
+        await self.app(scope, receive, send_wrapper)
+
+    @staticmethod
+    def _matches(if_none_match: str, etag: str) -> bool:
+        candidates = [c.strip() for c in if_none_match.replace('W/', '').split(',')]
+        return '*' in candidates or etag.replace('W/', '') in candidates
+
+
+app.add_middleware(ETagNotModifiedMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=['*'],
@@ -107,10 +157,21 @@ app.include_router(ws_logs.router, prefix='/ws/v1', tags=['系统日志'])
 app.include_router(ws_telemetry.router, prefix='/ws/v1', tags=['遥测数据流'])
 
 
+# 入口页 index.html 必须每次向服务器重新验证：它引用的是带内容哈希的构建产物，
+# 版本更新后旧 chunk 即被替换，浏览器若启发式缓存入口页，懒加载路由会拿到 404。
+# 带哈希的 assets/ 产物内容永不变，可长期强缓存。
+INDEX_CACHE_CONTROL = 'no-cache'
+ASSET_CACHE_CONTROL = 'public, max-age=31536000, immutable'
+
+
+def _frontend_file(path: Path, cache_control: str) -> FileResponse:
+    return FileResponse(path, headers={'Cache-Control': cache_control})
+
+
 @app.get('/')
 async def root():
     if (FRONTEND_DIST / 'index.html').is_file():
-        return FileResponse(FRONTEND_DIST / 'index.html')
+        return _frontend_file(FRONTEND_DIST / 'index.html', INDEX_CACHE_CONTROL)
     return {'status': 'running', 'api_docs': '/docs'}
 
 
@@ -173,9 +234,12 @@ async def frontend(path: str):
     if not candidate.is_relative_to(FRONTEND_DIST):
         raise HTTPException(status_code=404)
     if candidate.is_file():
-        return FileResponse(candidate)
+        # Vite 产物按 assets/<js|css|img>/ 两级存放，文件名带内容哈希
+        if candidate.is_relative_to((FRONTEND_DIST / 'assets').resolve()):
+            return _frontend_file(candidate, ASSET_CACHE_CONTROL)
+        return _frontend_file(candidate, INDEX_CACHE_CONTROL)
     spa_routes = {'telecom', 'pest', 'heatmap-flow', 'power', 'roof', 'wall', 'pruning',
                   'height', 'area', 'rose-digital', 'rose-yield', 'assets', 'fendai-flower', 'plate', 'vehicle-coverage', 'wall/replay', 'wall/replay/tools'}
     if path.strip('/') in spa_routes and (FRONTEND_DIST / 'index.html').is_file():
-        return FileResponse(FRONTEND_DIST / 'index.html')
+        return _frontend_file(FRONTEND_DIST / 'index.html', INDEX_CACHE_CONTROL)
     raise HTTPException(status_code=404, detail='页面或文件不存在；首次部署请先运行 setup。')
