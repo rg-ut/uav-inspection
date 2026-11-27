@@ -131,7 +131,7 @@ def module_status() -> dict[str, dict]:
 
     entry('pest', '病虫害巡检', '/pest', 'simulation', [],
           '玉米单株、两株与三株密植的仿真记录回放，支持三种巡检方式对比、相机画面与 JSON 导出；无需额外推理依赖。')
-    entry('rose-digital', '数字玫瑰园', '/rose-digital', 'demo', [], '页面展示内置示例地块数据。')
+    entry('rose-digital', '数字玫瑰园', '/rose-digital', 'scene', [])
     scene_ready = backend_path('fendaidata', 'scenes', 'fendai-flower.ksplat').is_file()
     entry('fendai', '粉黛花漫游', '/fendai-flower', 'scene', [] if scene_ready else [
         requirement('fendai-flower.ksplat 场景', 'fendai-scenes')])
