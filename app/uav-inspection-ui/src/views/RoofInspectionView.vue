@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
 import { FilePlus2, Maximize, Minimize, ScanLine, Upload } from 'lucide-vue-next'
+import DetectionVideoFrame from '../components/common/DetectionVideoFrame.vue'
+import FlightTrace from '../components/common/FlightTrace.vue'
 import InfrastructureWorkspace from '../components/common/InfrastructureWorkspace.vue'
 import { findTelemetry, parseSrt, type TelemetryFrame } from '../utils/srtParser'
 import { webPath } from '../utils/webroot'
@@ -11,7 +13,7 @@ interface Task {
   video_url: string; srt_url: string; report_url: string; created_at: string; error: string
 }
 type BoundingBox = [number, number, number, number]
-interface DetectionBox { class_name: string; bbox: BoundingBox }
+interface DetectionBox { class_name: string; bbox: BoundingBox; confidence?: number }
 interface Defect {
   id: string; class_name: string; confidence?: number; video_time_ms?: number
   review_status?: Review; screenshot_path?: string; bbox?: BoundingBox
@@ -40,6 +42,14 @@ const videoStage = ref<HTMLElement>()
 const fullscreenAvailable = document.fullscreenEnabled
 const videoFullscreen = ref(false)
 const videoTime = ref(0)
+const videoDuration = ref(0)
+const playing = ref(false)
+const previewing = ref(false)
+const autoDetect = ref(true)
+const preview = ref<{ time: number; boxes: DetectionBox[] } | null>(null)
+const loadingTasks = ref(true)
+let previewRevision = 0
+let lastPreviewSecond = -1
 const box = ref({ left: 0, top: 0, width: 0, height: 0 })
 const confidence = ref(0.3)
 const name = ref('')
@@ -60,15 +70,30 @@ const counts = computed(() => ({
   confirmed: defects.value.filter(item => item.review_status === 'confirmed').length,
   rejected: defects.value.filter(item => item.review_status === 'rejected').length,
 }))
-const telemetry = computed(() => {
-  if (frames.value.length) {
-    const point = findTelemetry(frames.value, videoTime.value)
-    if (!point || videoTime.value < point.time || videoTime.value > point.endTime) return null
-    return { lat: point.gpsAvailable ? point.latitude : undefined, lng: point.gpsAvailable ? point.longitude : undefined, height: point.altitudeAvailable ? point.relAlt : undefined }
-  }
-  const point = [...legacy.value].reverse().find(item => item.video_time_ms <= videoTime.value * 1000)
-  return point ? { lat: point.latitude, lng: point.longitude, height: point.relative_altitude ?? point.rel_alt ?? point.altitude } : null
+const flightFrames = computed((): TelemetryFrame[] => {
+  if (frames.value.length) return frames.value
+  const points = legacy.value.filter(point => Number.isFinite(point.video_time_ms))
+    .sort((a, b) => a.video_time_ms - b.video_time_ms)
+  return points.map((point, index) => {
+    const time = point.video_time_ms / 1000
+    const altitude = point.relative_altitude ?? point.rel_alt
+    return {
+      frameCnt: index, time, endTime: Math.min(time + 2, (points[index + 1]?.video_time_ms ?? (time + 2) * 1000) / 1000),
+      datetime: '', latitude: point.latitude ?? 0, longitude: point.longitude ?? 0,
+      relAlt: altitude ?? 0, absAlt: point.altitude ?? 0,
+      gpsAvailable: Number.isFinite(point.latitude) && Number.isFinite(point.longitude),
+      altitudeAvailable: Number.isFinite(altitude),
+      gbYaw: 0, gbPitch: 0, gbRoll: 0, iso: 0, shutter: '', fnum: 0, focalLen: 0,
+    }
+  })
 })
+const telemetry = computed(() => {
+  const point = findTelemetry(flightFrames.value, videoTime.value)
+  return point && videoTime.value >= point.time && videoTime.value <= point.endTime ? point : null
+})
+const hasFlightData = computed(() => flightFrames.value.some(point => point.gpsAvailable || point.altitudeAvailable))
+const canPreview = computed(() => !!task.value?.video_url && videoDuration.value > 0 && model.value.ready
+  && !previewing.value && task.value?.status !== 'running' && busy.value !== 'analysis')
 function hasBox(item: Defect): item is Defect & DetectionBox {
   const bounds = item.bbox
   return Array.isArray(bounds) && bounds.length === 4
@@ -90,6 +115,7 @@ function boxesAtTime({ frames, sample_interval_ms }: DetectionPlayback, timeMs: 
 
 const displayedBoxes = computed((): DetectionBox[] => {
   const timeMs = Math.round(videoTime.value * 1000)
+  if (preview.value && Math.abs(videoTime.value - preview.value.time) <= 1) return preview.value.boxes
   if (playback.value) {
     const recorded = boxesAtTime(playback.value, timeMs)
     if (recorded.length || !activeDefectId.value) return recorded
@@ -104,6 +130,12 @@ const displayedBoxes = computed((): DetectionBox[] => {
   return defects.value.filter(hasBox).filter(item =>
     typeof item.video_time_ms === 'number' && Math.abs(item.video_time_ms - timeMs) <= 500
   )
+})
+
+const targetCounts = computed(() => {
+  const counts = new Map<string, number>()
+  for (const box of displayedBoxes.value) counts.set(box.class_name, (counts.get(box.class_name) || 0) + 1)
+  return [...counts]
 })
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
@@ -161,8 +193,12 @@ async function refreshTask(id: string, token: number) {
 }
 async function chooseTask(id: string) {
   const token = ++selection
+  video.value?.pause()
   task.value = tasks.value.find(item => item.id === id) || null
+  playing.value = false
   videoTime.value = 0
+  videoDuration.value = 0
+  clearPreview()
   frames.value = []
   legacy.value = []
   defects.value = []
@@ -217,15 +253,95 @@ function updateFullscreen() {
   videoFullscreen.value = document.fullscreenElement === videoStage.value
 }
 
-function updateTime() {
+function syncTime() {
   videoTime.value = video.value?.currentTime || 0
 }
+function loadVideoMetadata() {
+  const duration = video.value?.duration
+  videoDuration.value = duration && Number.isFinite(duration) ? duration : 0
+  updateVideoBox()
+}
+async function togglePlay() {
+  const element = video.value
+  if (!element) return
+  if (!element.paused) { element.pause(); return }
+  try { await element.play() }
+  catch { if (element === video.value) errorMessage.value = '无法播放录像，请重试。' }
+}
+function seek(seconds: number) {
+  if (!video.value || !videoDuration.value) return
+  clearPreview()
+  video.value.currentTime = Math.min(videoDuration.value, Math.max(0, seconds))
+  syncTime()
+}
+function replay() {
+  activeDefectId.value = ''
+  seek(0)
+  if (video.value?.paused) void togglePlay()
+}
+function seekFromControl(seconds: number) {
+  activeDefectId.value = ''
+  seek(seconds)
+}
 function jump(item: Defect) {
-  if (!video.value || !Number.isFinite(video.value.duration) || typeof item.video_time_ms !== 'number') return
+  const time = item.video_time_ms
+  if (!video.value || typeof time !== 'number' || !Number.isFinite(time)) return
   video.value.pause()
   activeDefectId.value = item.id
-  video.value.currentTime = Math.min(video.value.duration, item.video_time_ms / 1000)
-  updateTime()
+  seek(time / 1000)
+}
+function clearPreview() {
+  ++previewRevision
+  preview.value = null
+  lastPreviewSecond = -1
+}
+function updateTime() {
+  syncTime()
+  const element = video.value
+  if (!autoDetect.value || playback.value || !canPreview.value || !element || element.paused || element.seeking) return
+  const second = Math.floor(videoTime.value)
+  if (second === lastPreviewSecond) return
+  lastPreviewSecond = second
+  void identifyFrame(true)
+}
+async function identifyFrame(automatic = false) {
+  const element = video.value
+  if (!canPreview.value || !element || !element.videoWidth || element.readyState < 2 || element.seeking) return
+  const revision = previewRevision
+  const time = element.currentTime
+  previewing.value = true
+  try {
+    const scale = Math.min(1, 640 / Math.max(element.videoWidth, element.videoHeight))
+    const canvas = document.createElement('canvas')
+    canvas.width = Math.max(1, Math.round(element.videoWidth * scale))
+    canvas.height = Math.max(1, Math.round(element.videoHeight * scale))
+    const context = canvas.getContext('2d')
+    if (!context) throw new Error('无法读取当前画面。')
+    context.drawImage(element, 0, 0, canvas.width, canvas.height)
+    const image = await new Promise<Blob | null>(resolve => canvas.toBlob(resolve, 'image/jpeg', .8))
+    if (!image) throw new Error('无法读取当前画面。')
+    if (revision !== previewRevision) return
+    const body = new FormData()
+    body.set('image', image, 'frame.jpg')
+    body.set('confidence', String(confidence.value))
+    const data = await request<{ boxes: DetectionBox[] }>('/detect-frame', { method: 'POST', body })
+    if (revision === previewRevision && element === video.value && Math.abs(element.currentTime - time) <= 1) {
+      preview.value = { time, boxes: data.boxes }
+      errorMessage.value = ''
+      if (!automatic) note.value = data.boxes.length ? '已识别当前画面。' : '当前画面未发现缺陷。'
+    }
+  } catch (error) {
+    if (revision === previewRevision) {
+      preview.value = null
+      errorMessage.value = errorText(error)
+    }
+  } finally { previewing.value = false }
+}
+function failVideo() {
+  playing.value = false
+  videoDuration.value = 0
+  clearPreview()
+  errorMessage.value = '无法播放此录像，请重新上传视频。'
 }
 function openDialog(dialog: HTMLDialogElement | undefined) {
   dialogError.value = ''
@@ -282,6 +398,7 @@ async function startAnalysis() {
   if (defect_count && !window.confirm('重新检测会更新未复核的自动识别结果。继续吗？')) return
   const token = selection
   busy.value = 'analysis'
+  clearPreview()
   errorMessage.value = ''
   note.value = ''
   try {
@@ -311,6 +428,7 @@ onMounted(async () => {
   if (videoStage.value) resizeObserver.observe(videoStage.value)
   document.addEventListener('fullscreenchange', updateFullscreen)
   const results = await Promise.allSettled([loadTasks(), request<typeof model.value>('/model')])
+  loadingTasks.value = false
   if (results[1].status === 'fulfilled') model.value = results[1].value
   else errorMessage.value = errorText(results[1].reason)
   if (results[0].status === 'rejected') errorMessage.value = errorText(results[0].reason)
@@ -318,6 +436,7 @@ onMounted(async () => {
 })
 onUnmounted(() => {
   ++selection
+  clearPreview()
   if (poll) clearTimeout(poll)
   resizeObserver?.disconnect()
   document.removeEventListener('fullscreenchange', updateFullscreen)
@@ -327,16 +446,21 @@ onUnmounted(() => {
 <template>
   <InfrastructureWorkspace kind="roof" title="屋顶巡检" :task="task?.name" :status="task ? (statuses[task.status] || '待检测') : '待上传'">
     <template #actions>
+      <RouterLink class="infra-button" :to="{ path: '/assets', query: { category: 'roof-model' } }">模型与素材</RouterLink>
       <button class="infra-button" @click="openDialog(assetDialog)"><Upload :size="16" /> 上传模型</button>
       <button class="infra-button infra-button--primary" @click="openDialog(taskDialog)"><FilePlus2 :size="16" /> 上传巡检任务</button>
     </template>
 
     <div ref="videoStage" class="infra-video roof-video-stage">
-      <video v-if="task?.video_url" :key="task.id" ref="video" :src="webPath(task.video_url)" controls playsinline controlslist="nofullscreen" preload="metadata"
-        aria-label="屋顶巡检录像" @loadedmetadata="updateVideoBox" @resize="updateVideoBox"
-        @play="activeDefectId = ''" @timeupdate="updateTime" @seeking="updateTime" @seeked="updateTime"
-        @error="errorMessage = '无法播放此录像，请重新上传视频。'" />
-      <p v-else>{{ task ? '这个任务没有可播放的录像。' : '上传巡检录像，或从右上角打开历史任务。' }}</p>
+      <DetectionVideoFrame label="巡检录像" :status="previewing ? '正在识别' : playing ? '播放中' : '已暂停'"
+        :playing="playing" :disabled="!videoDuration" :current-time="videoTime" :duration="videoDuration" :empty="!task?.video_url"
+        :empty-text="loadingTasks ? '正在加载任务…' : '上传巡检录像，或从右上角打开历史任务。'"
+        @toggle="togglePlay" @replay="replay" @seek="seekFromControl">
+        <video v-if="task?.video_url" :key="task.id" ref="video" :src="webPath(task.video_url)"
+          muted playsinline preload="auto" aria-label="屋顶巡检录像" @loadedmetadata="loadVideoMetadata" @resize="updateVideoBox"
+          @play="playing = true; activeDefectId = ''; updateTime()" @pause="playing = false" @ended="playing = false"
+          @timeupdate="updateTime" @seeking="clearPreview(); syncTime()" @seeked="updateTime" @error="failVideo" />
+      </DetectionVideoFrame>
       <button v-if="task?.video_url && fullscreenAvailable" type="button" class="roof-fullscreen"
         :aria-label="videoFullscreen ? '退出全屏' : '全屏播放'" :title="videoFullscreen ? '退出全屏' : '全屏播放'"
         @click="toggleVideoFullscreen">
@@ -347,15 +471,9 @@ onUnmounted(() => {
         <div v-for="(item, index) in displayedBoxes" :key="index" class="roof-video-box" :style="{
           left: (item.bbox[0] * 100) + '%', top: (item.bbox[1] * 100) + '%',
           width: ((item.bbox[2] - item.bbox[0]) * 100) + '%', height: ((item.bbox[3] - item.bbox[1]) * 100) + '%'
-        }"><span>{{ item.class_name }}</span></div>
+        }"><span>{{ item.class_name }}<template v-if="item.confidence !== undefined"> {{ Math.round(item.confidence * 100) }}%</template></span></div>
       </div>
     </div>
-    <section class="infra-panel infra-telemetry" aria-label="拍摄位置">
-      <span>纬度<strong>{{ displayNumber(telemetry?.lat, 6) }}</strong></span>
-      <span>经度<strong>{{ displayNumber(telemetry?.lng, 6) }}</strong></span>
-      <span>相对起飞点高度<strong>{{ displayNumber(telemetry?.height, 1, ' m') }}</strong></span>
-      <span v-if="!task?.srt_url && !legacy.length" class="infra-muted">未提供飞行字幕</span>
-    </section>
     <section class="infra-panel roof-tools" aria-label="视频检测">
       <div><strong>{{ model.ready ? '模型已就绪' : model.message }}</strong><small v-if="model.ready">{{ model.name }}</small></div>
       <label>识别阈值
@@ -363,37 +481,56 @@ onUnmounted(() => {
           <option :value="0.2">20%</option><option :value="0.3">30%</option><option :value="0.45">45%</option><option :value="0.6">60%</option>
         </select>
       </label>
-      <button class="infra-button infra-button--primary" :disabled="!task?.video_url || !model.ready || !!busy || task.status === 'running'" @click="startAnalysis"><ScanLine :size="16" />{{ task?.status === 'completed' ? '重新检测' : '开始检测' }}</button>
+      <button class="infra-button" :disabled="!canPreview" @click="identifyFrame()">识别当前画面</button>
+      <label><input v-model="autoDetect" type="checkbox" @change="clearPreview" /> 播放时自动识别</label>
+      <button class="infra-button infra-button--primary" :disabled="!task?.video_url || !model.ready || !!busy || previewing || task.status === 'running'" @click="startAnalysis"><ScanLine :size="16" />{{ task?.status === 'completed' ? '重新检测整段' : '整段检测' }}</button>
+      <p v-if="targetCounts.length" class="roof-feedback infra-muted">画面目标 <span v-for="[label, count] in targetCounts" :key="label">{{ label }} {{ count }} 个</span></p>
       <p v-if="task?.status === 'running'" class="roof-feedback" role="status"><progress :value="task.progress" max="100" /> 检测进度 {{ task.progress }}%</p>
       <p v-if="errorMessage || task?.error" class="roof-feedback infra-warning" role="alert">{{ errorMessage || task?.error }}</p>
       <p v-else-if="note" class="roof-feedback infra-message" role="status">{{ note }}</p>
     </section>
 
     <template #results>
-      <h2>屋面缺陷</h2>
-      <div class="infra-metrics">
-        <div><strong>{{ counts.pending }}</strong>待复核</div>
-        <div><strong>{{ counts.confirmed }}</strong>已确认</div>
-        <div><strong>{{ counts.rejected }}</strong>误报</div>
-      </div>
-      <label class="roof-filter">按状态筛选
-        <select v-model="reviewFilter" class="infra-input"><option value="all">全部缺陷</option><option v-for="(label, key) in reviewLabels" :key="key" :value="key">{{ label }}</option></select>
-      </label>
-      <div v-if="visibleDefects.length" class="infra-list" aria-label="缺陷记录">
-        <article v-for="item in visibleDefects" :key="item.id" class="infra-row roof-defect">
-          <img v-if="evidenceUrl(item)" :src="evidenceUrl(item)" alt="缺陷所在画面" loading="lazy" @error="brokenImages.push(item.id)" />
-          <div>
-            <h3>{{ item.class_name }}</h3>
-            <p class="infra-muted">{{ reviewLabels[item.review_status || 'pending'] }}<span v-if="typeof item.confidence === 'number'"> · 识别把握 {{ Math.round(item.confidence * 100) }}%</span></p>
-            <div class="roof-defect-actions">
-              <button class="infra-button" :disabled="!task?.video_url || typeof item.video_time_ms !== 'number'" @click="jump(item)">回看 {{ formatVideoTime(item.video_time_ms) }}</button>
-              <button v-if="item.review_status !== 'confirmed'" class="infra-button" :disabled="!!busy || task?.status === 'running'" @click="review(item, 'confirmed')">确认</button>
-              <button v-if="item.review_status !== 'rejected'" class="infra-button" :disabled="!!busy || task?.status === 'running'" @click="review(item, 'rejected')">标为误报</button>
-            </div>
+      <div class="roof-results">
+        <section aria-labelledby="roof-flight-title">
+          <h2 id="roof-flight-title">飞行数据</h2>
+          <p v-if="!hasFlightData" class="infra-empty">{{ task ? '这个任务没有可用的飞行定位或高度数据。' : '打开带飞行字幕的任务后可查看。' }}</p>
+          <template v-else>
+            <section class="infra-telemetry" aria-label="拍摄位置">
+              <span>纬度<strong>{{ displayNumber(telemetry?.gpsAvailable ? telemetry.latitude : undefined, 6) }}</strong></span>
+              <span>经度<strong>{{ displayNumber(telemetry?.gpsAvailable ? telemetry.longitude : undefined, 6) }}</strong></span>
+              <span>相对起飞点高度<strong>{{ displayNumber(telemetry?.altitudeAvailable ? telemetry.relAlt : undefined, 1, ' m') }}</strong></span>
+            </section>
+            <FlightTrace :frames="flightFrames" :current="telemetry" :time="videoTime" @seek="video?.pause(); seekFromControl($event)" />
+          </template>
+        </section>
+        <section class="roof-records" aria-labelledby="roof-records-title">
+          <h2 id="roof-records-title">屋面缺陷</h2>
+          <div class="infra-metrics">
+            <div><strong>{{ counts.pending }}</strong>待复核</div>
+            <div><strong>{{ counts.confirmed }}</strong>已确认</div>
+            <div><strong>{{ counts.rejected }}</strong>误报</div>
           </div>
-        </article>
+          <label class="roof-filter">按状态筛选
+            <select v-model="reviewFilter" class="infra-input"><option value="all">全部缺陷</option><option v-for="(label, key) in reviewLabels" :key="key" :value="key">{{ label }}</option></select>
+          </label>
+          <div v-if="visibleDefects.length" class="infra-list" aria-label="缺陷记录">
+            <article v-for="item in visibleDefects" :key="item.id" class="infra-row roof-defect">
+              <img v-if="evidenceUrl(item)" :src="evidenceUrl(item)" alt="缺陷所在画面" loading="lazy" @error="brokenImages.push(item.id)" />
+              <div>
+                <h3>{{ item.class_name }}</h3>
+                <p class="infra-muted">{{ reviewLabels[item.review_status || 'pending'] }}<span v-if="typeof item.confidence === 'number'"> · 识别把握 {{ Math.round(item.confidence * 100) }}%</span></p>
+                <div class="roof-defect-actions">
+                  <button class="infra-button" :disabled="!task?.video_url || typeof item.video_time_ms !== 'number'" @click="jump(item)">回看 {{ formatVideoTime(item.video_time_ms) }}</button>
+                  <button v-if="item.review_status !== 'confirmed'" class="infra-button" :disabled="!!busy || task?.status === 'running'" @click="review(item, 'confirmed')">确认</button>
+                  <button v-if="item.review_status !== 'rejected'" class="infra-button" :disabled="!!busy || task?.status === 'running'" @click="review(item, 'rejected')">标为误报</button>
+                </div>
+              </div>
+            </article>
+          </div>
+          <p v-else class="infra-empty">{{ task?.status === 'running' ? '正在读取画面，发现疑似缺陷后将在这里显示。' : task?.status === 'completed' ? '当前筛选下没有缺陷记录。' : '选择任务并开始检测后，疑似缺陷会显示在这里。' }}</p>
+        </section>
       </div>
-      <p v-else class="infra-empty">{{ task?.status === 'running' ? '正在读取画面，发现疑似缺陷后将在这里显示。' : task?.status === 'completed' ? '当前筛选下没有缺陷记录。' : '选择任务并开始检测后，疑似缺陷会显示在这里。' }}</p>
     </template>
 
     <template #history="{ close }">
@@ -425,7 +562,7 @@ onUnmounted(() => {
         <h2>上传屋顶巡检模型</h2>
         <form class="infra-form" @submit.prevent="uploadModel">
           <p class="infra-muted">请选择训练好的屋顶 YOLO 模型，支持 PT 和 ONNX。</p>
-          <details class="infra-muted"><summary>ONNX 导出要求</summary>图像大小 640，关闭内置 NMS。支持单类别检测，或按杂草堆积、屋面脱皮、积水区域排序的三类别检测。</details>
+          <details class="infra-muted"><summary>ONNX 导出要求</summary>使用 YOLO 目标检测模型，图像大小 640，导出时关闭内置 NMS 和端到端输出。类别名称随模型读取。</details>
           <label>模型文件 <input class="infra-input" type="file" accept=".onnx,.pt" required @change="modelFile = fileValue($event)" /></label>
           <p v-if="dialogError" class="infra-warning" role="alert">{{ dialogError }}</p>
           <footer><button type="button" class="infra-button" :disabled="!!busy" @click="assetDialog?.close()">取消</button><button type="submit" class="infra-button infra-button--primary" :disabled="!modelFile || !!busy">{{ busy === 'model' ? '正在校验' : '上传模型' }}</button></footer>
@@ -442,6 +579,13 @@ onUnmounted(() => {
 .roof-tools label, .roof-filter { display: flex; align-items: center; gap: 7px; white-space: nowrap; }
 .roof-tools select { width: auto; }
 .roof-feedback { flex-basis: 100%; }
+.roof-feedback span { display: inline-block; margin-inline-start: 10px; }
+.roof-results, .roof-records { display: grid; align-content: start; gap: 10px; }
+.roof-records { border-top: 1px solid var(--border); padding-top: 12px; }
+.roof-records h2 { margin: 0; }
+.roof-video-stage :deep(.inspection-video-frame) { width: 100%; height: 100%; min-height: 0; border: 0; border-radius: 0; }
+.roof-results :deep(.flight-map) { flex: none; height: 168px; }
+.roof-video-stage :deep(.inspection-video-frame__status) { margin-right: 44px; }
 .roof-feedback progress { vertical-align: middle; width: min(230px, 50%); accent-color: var(--accent); }
 .roof-defect { align-items: start; justify-content: start; }
 .roof-defect img { flex-shrink: 0; width: 66px; height: 53px; object-fit: cover; border-radius: 4px; }
@@ -451,7 +595,7 @@ onUnmounted(() => {
 .infra-workspace .roof-video-stage:fullscreen { width: 100%; height: 100%; border-radius: 0; }
 .roof-fullscreen {
   position: absolute;
-  z-index: 2;
+  z-index: 6;
   top: 10px;
   right: 10px;
   width: 36px;

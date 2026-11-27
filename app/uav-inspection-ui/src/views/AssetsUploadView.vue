@@ -15,6 +15,8 @@ interface CategoryOption {
   target: string
   hint?: string
   expected_filename?: string
+  accept?: string
+  root_only?: boolean
 }
 
 interface FileEntry {
@@ -123,7 +125,7 @@ function describeModule(item: ModuleStatus): string {
 
 const moduleCards = computed(() => {
   const cards = Object.entries(modules.value).map(([key, item]) => ({
-    key, title: item.title, route: item.route, description: describeModule(item), canCheckModel: item.mode === 'inference',
+    key, title: item.title, route: item.route, description: describeModule(item), canCheckModel: item.mode === 'inference' || key === 'roof',
   }))
   if (categories.value.some(item => item.key === PLATE_CATEGORY)) {
     const position = cards.findIndex(card => card.key === 'power') + 1
@@ -538,8 +540,8 @@ onMounted(async () => {
               <RouterLink v-if="card.key === 'wall'" to="/wall?upload=1">上传外墙任务</RouterLink>
               <RouterLink v-else-if="mediaCategories[card.key]" :to="{ path: '/assets', query: { category: mediaCategories[card.key] } }"
                 :aria-disabled="busy || restoringPlate" @click.capture="openUploadSection($event, card.key)">{{ card.key === 'plate' ? '上传数据包' : '上传素材' }}</RouterLink>
-              <RouterLink v-if="card.key === 'roof'" to="/roof">上传模型或检测</RouterLink>
-              <RouterLink v-else-if="card.canCheckModel" :to="{ path: '/assets', query: { category: card.key + '-model' } }">上传权重 / 试运行</RouterLink>
+              <RouterLink v-if="card.canCheckModel" :to="{ path: '/assets', query: { category: card.key + '-model' } }"
+                :aria-disabled="busy || restoringPlate" @click.capture="openUploadSection($event, card.key)">上传权重 / 试运行</RouterLink>
             </div>
           </div>
         </div>
@@ -562,7 +564,7 @@ onMounted(async () => {
               </option>
             </select>
           </label>
-          <label v-if="!isPlatePackage" class="flex flex-col gap-1.5 text-sm font-medium text-slate-600">
+          <label v-if="!isPlatePackage && !selectedCategory?.root_only" class="flex flex-col gap-1.5 text-sm font-medium text-slate-600">
             子目录（可选，如任务名，留空传到分类根）
             <input
               v-model="subdir"
@@ -613,7 +615,7 @@ onMounted(async () => {
         <label
           class="cursor-pointer rounded-lg border-2 border-dashed border-slate-300 p-5 text-center transition-colors hover:border-blue-400 hover:bg-blue-50/40 sm:p-8"
         >
-          <input ref="fileInputRef" type="file" :multiple="!isPlatePackage" :accept="isPlatePackage ? '.zip,.tar.gz,.tgz' : undefined"
+          <input ref="fileInputRef" type="file" :multiple="!isPlatePackage" :accept="isPlatePackage ? '.zip,.tar.gz,.tgz' : selectedCategory?.accept"
             :disabled="busy || restoringPlate" class="hidden" @change="onPick" />
           <FolderOpen :size="34" class="mx-auto text-slate-400 mb-2" />
           <p class="text-sm text-slate-500">

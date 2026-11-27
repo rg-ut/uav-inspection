@@ -8,6 +8,7 @@ import numpy as np
 
 from deployment_paths import backend_path
 from optional_inference import inference_dependencies_available, inference_device, model_signature
+from roofapp.onnx_metadata import class_names, literal, read_metadata
 
 MODEL_DIR = backend_path('roofapp')
 PT_MODEL = MODEL_DIR / 'roof-best.pt'
@@ -33,7 +34,17 @@ def model_status():
 
 
 def load_onnx(path):
-    net = cv2.dnn.readNetFromONNX(np.frombuffer(path.read_bytes(), dtype=np.uint8))
+    model = path.read_bytes()
+    metadata = read_metadata(model)
+    names = class_names(metadata.get('names', ''))
+    arguments = literal(metadata.get('args', ''))
+    if metadata.get('task', 'detect') != 'detect' or metadata.get('end2end', '').lower() == 'true' or (
+        isinstance(arguments, dict) and arguments.get('nms')
+    ):
+        raise ValueError('ONNX 请使用 YOLO 目标检测模型，导出时关闭内置 NMS 和端到端输出。')
+    if metadata.get('names') and not names:
+        raise ValueError('ONNX 模型类别信息无效，请重新导出模型。')
+    net = cv2.dnn.readNetFromONNX(np.frombuffer(model, dtype=np.uint8))
 
     def predict(frame, confidence):
         h, w = frame.shape[:2]
@@ -44,11 +55,24 @@ def load_onnx(path):
         image[y0:y0 + sh, x0:x0 + sw] = cv2.resize(frame, (sw, sh))
         net.setInput(cv2.dnn.blobFromImage(image, 1 / 255, (640, 640), swapRB=True))
         output = np.asarray(net.forward())
-        if output.ndim != 3 or output.shape[0] != 1 or output.shape[1] not in (5, 7):
-            raise ValueError('ONNX 需使用 640 输入、关闭内置 NMS 的单类别或三类别 YOLO 检测模型。')
-        names = LABELS if output.shape[1] == 7 else ('屋面缺陷',)
-        candidates = {name: ([], []) for name in names}
-        for row in output[0].T:
+        error = 'ONNX 输出与模型类别不匹配，请使用 640 输入且关闭内置 NMS 的 YOLO 目标检测模型。'
+        if output.ndim != 3 or output.shape[0] != 1:
+            raise ValueError(error)
+        rows = output[0]
+        if names:
+            channels = 4 + len(names)
+        elif rows.shape[0] in (5, 7):
+            channels = rows.shape[0]
+        elif rows.shape[1] in (5, 7):
+            channels = rows.shape[1]
+        else:
+            channels = min(rows.shape)
+        if not 5 <= channels <= 516 or channels not in rows.shape:
+            raise ValueError(error)
+        labels = names or ({5: ('屋面缺陷',), 7: LABELS}.get(channels)
+                           or tuple(f'类别 {index}' for index in range(channels - 4)))
+        candidates = [([], []) for _ in labels]
+        for row in rows.T if rows.shape[0] == channels else rows:
             if not np.isfinite(row).all():
                 continue
             class_id = int(np.argmax(row[4:]))
@@ -59,11 +83,11 @@ def load_onnx(path):
             left, right = map(int, np.clip([(cx - bw / 2 - x0) / scale, (cx + bw / 2 - x0) / scale], 0, w))
             top, bottom = map(int, np.clip([(cy - bh / 2 - y0) / scale, (cy + bh / 2 - y0) / scale], 0, h))
             if right > left and bottom > top:
-                boxes, scores = candidates[names[class_id]]
+                boxes, scores = candidates[class_id]
                 boxes.append([left, top, right - left, bottom - top])
                 scores.append(score)
         result = []
-        for name, (boxes, scores) in candidates.items():
+        for name, (boxes, scores) in zip(labels, candidates):
             for idx in np.asarray(cv2.dnn.NMSBoxes(boxes, scores, confidence, .45)).reshape(-1):
                 x, y, width, height = boxes[int(idx)]
                 result.append((name, scores[int(idx)], [x, y, x + width, y + height]))
@@ -126,8 +150,8 @@ def load_pt_predictor(path):
     return predictor
 
 
-def build_predictor(path):
-    if path.suffix == '.onnx':
+def build_predictor(path, suffix=None):
+    if (suffix or path.suffix) == '.onnx':
         return load_onnx(path)
     predictor = load_pt_predictor(path)
 

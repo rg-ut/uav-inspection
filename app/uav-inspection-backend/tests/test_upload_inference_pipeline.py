@@ -88,6 +88,11 @@ class UploadInferenceTests(unittest.TestCase):
     def test_roof_detection_persists_evidence_and_review(self):
         api = '/api/v1/roof'
         model = base64.b64decode((Path(__file__).parent / 'fixtures/preview_detector.onnx.b64').read_text())
+        # Append the standard ONNX ModelProto metadata entry to the real test network.
+        label = '屋面裂缝'
+        names = repr({0: label}).encode()
+        metadata = b'\x0a\x05names\x12' + bytes([len(names)]) + names
+        model += b'\x72' + bytes([len(metadata)]) + metadata
         srt = b'1\n00:00:00,000 --> 00:00:01,000\n[latitude: 24.83] [longitude: 102.84] [rel_alt: 32]\n'
         path = Path(self.tmp.name) / 'roof-samples.avi'
         writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*'MJPG'), 12, (96, 64))
@@ -101,8 +106,31 @@ class UploadInferenceTests(unittest.TestCase):
         url = api + '/tasks/' + upload['task_id']
         task = self.data(self.client.get(url))
         self.assertEqual(self.client.get(task['srt_url']).content, srt)
-        model_state = self.data(self.client.post(api + '/model', files={'file': ('fixture.onnx', model)}))
-        self.assertTrue(model_state['ready'])
+        categories = self.data(self.client.get('/api/v1/assets/categories'))
+        category = next(item for item in categories if item['key'] == 'roof-model')
+        self.assertEqual(Path(category['target']), Path('uav-inspection-backend/roofapp'))
+        asset_url = '/api/v1/assets/upload'
+        self.assertEqual(self.client.post(asset_url, data={'category': 'roof-model', 'subdir': 'wrong'},
+                                        files={'files': ('fixture.onnx', model)}).status_code, 422)
+        self.data(self.client.post(asset_url, data={'category': 'roof-model'},
+                                   files={'files': ('fixture.ONNX', model)}))
+        self.assertEqual(self.data(self.client.get(api + '/model'))['name'], 'roof-best.onnx')
+        with patch('assetsapp.api.CHUNK_SIZE', 300):
+            init = self.data(self.client.post(asset_url + '/init', data={
+                'category': 'roof-model', 'filename': 'custom.onnx', 'size': len(model), 'overwrite': True,
+            }))
+        for index, part in enumerate(range(0, len(model), init['chunkSize'])):
+            self.data(self.client.post(asset_url + '/chunk',
+                data={'upload_id': init['uploadId'], 'index': index},
+                files={'file': ('part', model[part:part + init['chunkSize']])}))
+        self.data(self.client.post(asset_url + '/complete', data={'upload_id': init['uploadId']}))
+        self.assertEqual(self.client.post(asset_url, data={'category': 'roof-model', 'overwrite': True},
+                                        files={'files': ('wrong.onnx', b'invalid')}).status_code, 422)
+        _, image = cv2.imencode('.jpg', np.full((64, 96, 3), 100, np.uint8))
+        preview = self.data(self.client.post(api + '/detect-frame', data={'confidence': .93},
+                            files={'image': ('frame.jpg', image.tobytes(), 'image/jpeg')}))
+        self.assertEqual([item['class_name'] for item in preview['boxes']], [label])
+        self.assertEqual(self.data(self.client.get(url + '/defects'))['defects'], [])
         self.assertTrue(self.data(self.client.post('/api/v1/assets/check/roof'))['model_ready'])
         result = self.client.post(url + '/analysis', json={'confidence': .93})
         self.assertEqual(result.status_code, 202, result.text)
@@ -110,7 +138,8 @@ class UploadInferenceTests(unittest.TestCase):
         results = self.data(self.client.get(url + '/defects'))
         self.assertEqual(len(results['defects']), 1)
         item = results['defects'][0]
-        box = {'bbox': item['bbox'], 'class_name': item['class_name']}
+        self.assertEqual(item['class_name'], label)
+        box = {key: item[key] for key in ('bbox', 'class_name', 'confidence')}
         self.assertEqual(results['playback'], {'sample_interval_ms': 1000, 'frames': [
             {'video_time_ms': 0, 'boxes': [box]},
             {'video_time_ms': 1000, 'boxes': [box]},
@@ -123,6 +152,19 @@ class UploadInferenceTests(unittest.TestCase):
         self.assertEqual(result.status_code, 202, result.text)
         reviewed = self.data(self.client.get(url + '/defects'))['defects']
         self.assertEqual([(row['id'], row['review_status']) for row in reviewed], [(item['id'], 'confirmed')])
+
+    def test_roof_onnx_two_classes_in_both_output_layouts(self):
+        from roofapp import runtime
+        source = Path(self.tmp.name) / 'two-classes.onnx'
+        names = repr({0: '屋面裂缝', 1: '排水口堵塞'}).encode()
+        metadata = b'\x0a\x05names\x12' + bytes([len(names)]) + names
+        source.write_bytes(b'\x72' + bytes([len(metadata)]) + metadata)
+        rows = np.array([[320, 320, 150, 100, .91, .01], [320, 320, 150, 100, .02, .89]], np.float32)
+        for output in (rows.T[None, ...], rows[None, ...]):
+            with patch.object(cv2.dnn, 'readNetFromONNX') as load_net:
+                load_net.return_value.forward.return_value = output
+                result = runtime.load_onnx(source)(np.zeros((640, 640, 3), np.uint8), .30)
+            self.assertEqual([name for name, _, _ in result], ['屋面裂缝', '排水口堵塞'])
 
     def test_task_uploads_convert_video_and_reject_broken_files(self):
         for module in ('power', 'telecom', 'rose'):
