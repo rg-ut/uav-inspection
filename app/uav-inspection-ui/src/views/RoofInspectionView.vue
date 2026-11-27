@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
-import { FilePlus2, ScanLine, Upload } from 'lucide-vue-next'
+import { FilePlus2, Maximize, Minimize, ScanLine, Upload } from 'lucide-vue-next'
 import InfrastructureWorkspace from '../components/common/InfrastructureWorkspace.vue'
 import { findTelemetry, parseSrt, type TelemetryFrame } from '../utils/srtParser'
 import { webPath } from '../utils/webroot'
@@ -10,10 +10,14 @@ interface Task {
   id: string; name: string; status: string; progress: number; defect_count: number
   video_url: string; srt_url: string; report_url: string; created_at: string; error: string
 }
+type BoundingBox = [number, number, number, number]
+interface DetectionBox { class_name: string; bbox: BoundingBox }
 interface Defect {
   id: string; class_name: string; confidence?: number; video_time_ms?: number
-  review_status?: Review; screenshot_path?: string; bbox?: [number, number, number, number]
+  review_status?: Review; screenshot_path?: string; bbox?: BoundingBox
 }
+interface DetectionFrame { video_time_ms: number; boxes: DetectionBox[] }
+interface DetectionPlayback { sample_interval_ms: number; frames: DetectionFrame[] }
 interface LegacyPoint { video_time_ms: number; latitude?: number; longitude?: number; relative_altitude?: number; rel_alt?: number; altitude?: number }
 
 const api = '/api/v1/roof'
@@ -22,6 +26,7 @@ const reviewLabels: Record<Review, string> = { pending: '待复核', confirmed: 
 const tasks = ref<Task[]>([])
 const task = ref<Task | null>(null)
 const defects = ref<Defect[]>([])
+const playback = ref<DetectionPlayback | null>(null)
 const frames = ref<TelemetryFrame[]>([])
 const legacy = ref<LegacyPoint[]>([])
 const reviewFilter = ref<Review | 'all'>('all')
@@ -32,6 +37,8 @@ const assetDialog = ref<HTMLDialogElement>()
 const taskDialog = ref<HTMLDialogElement>()
 const video = ref<HTMLVideoElement>()
 const videoStage = ref<HTMLElement>()
+const fullscreenAvailable = document.fullscreenEnabled
+const videoFullscreen = ref(false)
 const videoTime = ref(0)
 const box = ref({ left: 0, top: 0, width: 0, height: 0 })
 const confidence = ref(0.3)
@@ -62,9 +69,42 @@ const telemetry = computed(() => {
   const point = [...legacy.value].reverse().find(item => item.video_time_ms <= videoTime.value * 1000)
   return point ? { lat: point.latitude, lng: point.longitude, height: point.relative_altitude ?? point.rel_alt ?? point.altitude } : null
 })
-const activeDefect = computed(() => defects.value.find(item =>
-  item.id === activeDefectId.value && item.bbox?.length === 4 && item.bbox.every(value => value >= 0 && value <= 1) && Math.abs((item.video_time_ms || 0) / 1000 - videoTime.value) < 0.75
-))
+function hasBox(item: Defect): item is Defect & DetectionBox {
+  const bounds = item.bbox
+  return Array.isArray(bounds) && bounds.length === 4
+    && bounds.every(value => Number.isFinite(value) && value >= 0 && value <= 1)
+    && bounds[2] > bounds[0] && bounds[3] > bounds[1]
+}
+
+function boxesAtTime({ frames, sample_interval_ms }: DetectionPlayback, timeMs: number): DetectionBox[] {
+  let low = 0
+  let high = frames.length
+  while (low < high) {
+    const middle = Math.floor((low + high) / 2)
+    if (frames[middle].video_time_ms <= timeMs) low = middle + 1
+    else high = middle
+  }
+  const frame = frames[low - 1]
+  return frame && timeMs - frame.video_time_ms <= Math.ceil(sample_interval_ms) ? frame.boxes : []
+}
+
+const displayedBoxes = computed((): DetectionBox[] => {
+  const timeMs = Math.round(videoTime.value * 1000)
+  if (playback.value) {
+    const recorded = boxesAtTime(playback.value, timeMs)
+    if (recorded.length || !activeDefectId.value) return recorded
+    // A reviewed defect may refer to evidence from an earlier analysis.
+    const selected = defects.value.find(item => item.id === activeDefectId.value)
+    if (selected && hasBox(selected) && typeof selected.video_time_ms === 'number'
+      && Math.abs(selected.video_time_ms - timeMs) <= 150) return [selected]
+    return []
+  }
+
+  // Older tasks saved only the frames attached to defect evidence.
+  return defects.value.filter(hasBox).filter(item =>
+    typeof item.video_time_ms === 'number' && Math.abs(item.video_time_ms - timeMs) <= 500
+  )
+})
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const response = await fetch(webPath(api + path), { credentials: 'same-origin', ...options })
@@ -97,14 +137,18 @@ async function loadTasks() {
   tasks.value = (await request<{ tasks: Task[] }>('/tasks')).tasks
 }
 async function refreshTask(id: string, token: number) {
+  if (token !== selection) return
   if (poll) clearTimeout(poll)
   try {
     const path = '/tasks/' + encodeURIComponent(id)
-    const [details, results] = await Promise.all([request<Task>(path), request<{ defects: Defect[] }>(path + '/defects')])
+    const details = await request<Task>(path)
+    if (token !== selection) return
+    const results = await request<{ defects: Defect[]; playback?: DetectionPlayback | null }>(path + '/defects')
     if (token !== selection) return
     const wasRunning = task.value?.status === 'running'
     task.value = details
     defects.value = results.defects
+    playback.value = results.playback ?? null
     const index = tasks.value.findIndex(item => item.id === id)
     if (index >= 0) tasks.value[index] = details
     if (details.status === 'running') poll = setTimeout(() => void refreshTask(id, token), 1100)
@@ -122,6 +166,8 @@ async function chooseTask(id: string) {
   frames.value = []
   legacy.value = []
   defects.value = []
+  playback.value = null
+  box.value = { left: 0, top: 0, width: 0, height: 0 }
   brokenImages.value = []
   activeDefectId.value = ''
   note.value = ''
@@ -157,14 +203,28 @@ function updateVideoBox() {
   const fittedHeight = element.videoHeight * scale
   box.value = { left: (width - fittedWidth) / 2, top: (height - fittedHeight) / 2, width: fittedWidth, height: fittedHeight }
 }
+async function toggleVideoFullscreen() {
+  const stage = videoStage.value
+  if (!stage) return
+  try {
+    if (videoFullscreen.value) await document.exitFullscreen()
+    else await stage.requestFullscreen()
+  } catch {
+    errorMessage.value = '无法切换全屏，请检查浏览器设置。'
+  }
+}
+function updateFullscreen() {
+  videoFullscreen.value = document.fullscreenElement === videoStage.value
+}
+
 function updateTime() {
   videoTime.value = video.value?.currentTime || 0
 }
 function jump(item: Defect) {
   if (!video.value || !Number.isFinite(video.value.duration) || typeof item.video_time_ms !== 'number') return
   video.value.pause()
-  video.value.currentTime = Math.min(video.value.duration, item.video_time_ms / 1000)
   activeDefectId.value = item.id
+  video.value.currentTime = Math.min(video.value.duration, item.video_time_ms / 1000)
   updateTime()
 }
 function openDialog(dialog: HTMLDialogElement | undefined) {
@@ -249,13 +309,19 @@ onMounted(async () => {
   await nextTick()
   resizeObserver = new ResizeObserver(updateVideoBox)
   if (videoStage.value) resizeObserver.observe(videoStage.value)
+  document.addEventListener('fullscreenchange', updateFullscreen)
   const results = await Promise.allSettled([loadTasks(), request<typeof model.value>('/model')])
   if (results[1].status === 'fulfilled') model.value = results[1].value
   else errorMessage.value = errorText(results[1].reason)
   if (results[0].status === 'rejected') errorMessage.value = errorText(results[0].reason)
   else if (tasks.value[0]) await chooseTask(tasks.value[0].id)
 })
-onUnmounted(() => { ++selection; if (poll) clearTimeout(poll); resizeObserver?.disconnect() })
+onUnmounted(() => {
+  ++selection
+  if (poll) clearTimeout(poll)
+  resizeObserver?.disconnect()
+  document.removeEventListener('fullscreenchange', updateFullscreen)
+})
 </script>
 
 <template>
@@ -265,16 +331,24 @@ onUnmounted(() => { ++selection; if (poll) clearTimeout(poll); resizeObserver?.d
       <button class="infra-button infra-button--primary" @click="openDialog(taskDialog)"><FilePlus2 :size="16" /> 上传巡检任务</button>
     </template>
 
-    <div ref="videoStage" class="infra-video">
-      <video v-if="task?.video_url" :key="task.id" ref="video" :src="webPath(task.video_url)" controls playsinline preload="metadata"
-        aria-label="屋顶巡检录像" @loadedmetadata="updateVideoBox" @timeupdate="updateTime" @seeked="updateTime"
+    <div ref="videoStage" class="infra-video roof-video-stage">
+      <video v-if="task?.video_url" :key="task.id" ref="video" :src="webPath(task.video_url)" controls playsinline controlslist="nofullscreen" preload="metadata"
+        aria-label="屋顶巡检录像" @loadedmetadata="updateVideoBox" @resize="updateVideoBox"
+        @play="activeDefectId = ''" @timeupdate="updateTime" @seeking="updateTime" @seeked="updateTime"
         @error="errorMessage = '无法播放此录像，请重新上传视频。'" />
       <p v-else>{{ task ? '这个任务没有可播放的录像。' : '上传巡检录像，或从右上角打开历史任务。' }}</p>
-      <div v-if="activeDefect?.bbox && box.width" class="roof-video-box" :style="{
-        left: (box.left + activeDefect.bbox[0] * box.width) + 'px', top: (box.top + activeDefect.bbox[1] * box.height) + 'px',
-        width: ((activeDefect.bbox[2] - activeDefect.bbox[0]) * box.width) + 'px',
-        height: ((activeDefect.bbox[3] - activeDefect.bbox[1]) * box.height) + 'px'
-      }"><span>{{ activeDefect.class_name }}</span></div>
+      <button v-if="task?.video_url && fullscreenAvailable" type="button" class="roof-fullscreen"
+        :aria-label="videoFullscreen ? '退出全屏' : '全屏播放'" :title="videoFullscreen ? '退出全屏' : '全屏播放'"
+        @click="toggleVideoFullscreen">
+        <component :is="videoFullscreen ? Minimize : Maximize" :size="18" />
+      </button>
+      <div v-if="box.width && displayedBoxes.length" class="roof-video-overlay" aria-hidden="true"
+        :style="{ left: box.left + 'px', top: box.top + 'px', width: box.width + 'px', height: box.height + 'px' }">
+        <div v-for="(item, index) in displayedBoxes" :key="index" class="roof-video-box" :style="{
+          left: (item.bbox[0] * 100) + '%', top: (item.bbox[1] * 100) + '%',
+          width: ((item.bbox[2] - item.bbox[0]) * 100) + '%', height: ((item.bbox[3] - item.bbox[1]) * 100) + '%'
+        }"><span>{{ item.class_name }}</span></div>
+      </div>
     </div>
     <section class="infra-panel infra-telemetry" aria-label="拍摄位置">
       <span>纬度<strong>{{ displayNumber(telemetry?.lat, 6) }}</strong></span>
@@ -374,6 +448,22 @@ onUnmounted(() => { ++selection; if (poll) clearTimeout(poll); resizeObserver?.d
 .roof-defect > div { min-width: 0; }
 .roof-defect-actions { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 3px; }
 .roof-defect-actions .infra-button { min-height: 30px; padding: 3px 6px; font-size: 13px; }
-.roof-video-box { position: absolute; pointer-events: none; border: 2px solid #39d5ab; }
+.infra-workspace .roof-video-stage:fullscreen { width: 100%; height: 100%; border-radius: 0; }
+.roof-fullscreen {
+  position: absolute;
+  z-index: 2;
+  top: 10px;
+  right: 10px;
+  width: 36px;
+  height: 36px;
+  display: grid;
+  place-items: center;
+  border-radius: 6px;
+  background: #182321e6;
+  color: #fff;
+  cursor: pointer;
+}
+.roof-video-overlay { position: absolute; z-index: 1; pointer-events: none; }
+.roof-video-box { position: absolute; border: 2px solid #39d5ab; }
 .roof-video-box span { position: absolute; top: 0; left: 0; color: #10251d; background: #8ff6d2; white-space: nowrap; font-weight: 700; padding: 1px 5px; }
 </style>

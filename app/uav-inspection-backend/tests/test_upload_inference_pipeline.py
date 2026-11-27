@@ -89,24 +89,37 @@ class UploadInferenceTests(unittest.TestCase):
         api = '/api/v1/roof'
         model = base64.b64decode((Path(__file__).parent / 'fixtures/preview_detector.onnx.b64').read_text())
         srt = b'1\n00:00:00,000 --> 00:00:01,000\n[latitude: 24.83] [longitude: 102.84] [rel_alt: 32]\n'
+        path = Path(self.tmp.name) / 'roof-samples.avi'
+        writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*'MJPG'), 12, (96, 64))
+        self.assertTrue(writer.isOpened())
+        for color in (100, 100, 0):
+            for _ in range(12):
+                writer.write(np.full((64, 96, 3), color, np.uint8))
+        writer.release()
         upload = self.data(self.client.post(api + '/tasks/upload', data={'task_name': 'Roof fixture'},
-            files={'video': ('fixture.avi', self.movie), 'srt': ('flight.SRT', srt)}))
+            files={'video': ('fixture.avi', path.read_bytes()), 'srt': ('flight.SRT', srt)}))
         url = api + '/tasks/' + upload['task_id']
         task = self.data(self.client.get(url))
         self.assertEqual(self.client.get(task['srt_url']).content, srt)
         model_state = self.data(self.client.post(api + '/model', files={'file': ('fixture.onnx', model)}))
         self.assertTrue(model_state['ready'])
         self.assertTrue(self.data(self.client.post('/api/v1/assets/check/roof'))['model_ready'])
-        result = self.client.post(url + '/analysis', json={'confidence': .06})
+        result = self.client.post(url + '/analysis', json={'confidence': .93})
         self.assertEqual(result.status_code, 202, result.text)
         self.assertEqual(self.data(self.client.get(url))['status'], 'completed')
-        rows = self.data(self.client.get(url + '/defects'))['defects']
-        self.assertEqual(len(rows), 1)
-        item = rows[0]
+        results = self.data(self.client.get(url + '/defects'))
+        self.assertEqual(len(results['defects']), 1)
+        item = results['defects'][0]
+        box = {'bbox': item['bbox'], 'class_name': item['class_name']}
+        self.assertEqual(results['playback'], {'sample_interval_ms': 1000, 'frames': [
+            {'video_time_ms': 0, 'boxes': [box]},
+            {'video_time_ms': 1000, 'boxes': [box]},
+            {'video_time_ms': 2000, 'boxes': []},
+        ]})
         self.assertEqual(item['review_status'], 'pending')
         self.assertEqual(self.client.get(item['screenshot_path']).status_code, 200)
         self.data(self.client.put(url + '/defects/' + item['id'] + '/review', json={'review_status': 'confirmed'}))
-        result = self.client.post(url + '/analysis', json={'confidence': .06})
+        result = self.client.post(url + '/analysis', json={'confidence': .93})
         self.assertEqual(result.status_code, 202, result.text)
         reviewed = self.data(self.client.get(url + '/defects'))['defects']
         self.assertEqual([(row['id'], row['review_status']) for row in reviewed], [(item['id'], 'confirmed')])
