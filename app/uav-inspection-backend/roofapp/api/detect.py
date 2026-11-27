@@ -75,13 +75,16 @@ def _media_url(collection: str, task_id: str, filename: str):
     return prefixed(f'/api/v1/roof/{collection}/{quote(task_id, safe="")}/{quote(filename, safe="")}')
 
 
-def _defects(task_id: str):
+def _results(task_id: str, *, include_playback: bool = False):
     reports = _report_dir(task_id)
-    if active_task == task_id:
-        pending = _load_json(reports / 'analysis-in-progress.json', None)
-        if pending is not None:
-            return pending
-    return _load_json(reports / 'defects.json', [])
+    with REPORT_LOCK:
+        if active_task == task_id:
+            pending = _load_json(reports / 'analysis-in-progress.json', {})
+            if pending:
+                return pending['defects'], pending['playback'] if include_playback else None
+        rows = _load_json(reports / 'defects.json', [])
+        playback = _load_json(reports / 'detection-frames.json', {}) if include_playback else {}
+    return rows, playback or None
 
 
 def _read_task(task_id: str):
@@ -102,7 +105,7 @@ def _read_task(task_id: str):
     return {
         'id': task_id, 'name': meta.get('name') or (video.stem if video else '建筑屋顶巡检任务'),
         'status': status, 'progress': analysis.get('progress', 100 if has_results else 0),
-        'defect_count': len(_defects(task_id)), 'error': error, 'has_results': has_results,
+        'defect_count': len(_results(task_id)[0]), 'error': error, 'has_results': has_results,
         'video_url': _media_url('media', task_id, video.name) if video else '',
         'srt_url': _media_url('media', task_id, subtitle.name) if subtitle else '',
         'report_url': _media_url('reports', task_id, 'report.html') if (report / 'report.html').is_file() else '',
@@ -224,6 +227,7 @@ def _process_video(task_id, video, predict, confidence):
             raise ValueError('无法读取视频帧。')
         total = stream.get(cv2.CAP_PROP_FRAME_COUNT)
         step = max(1, round(fps))
+        playback = {'sample_interval_ms': step / fps * 1000, 'frames': []}
         index = 0
         last_progress = -5
         while stream.grab():
@@ -241,10 +245,12 @@ def _process_video(task_id, video, predict, confidence):
                 detections = predict(frame, confidence)
             candidates = [item for item in recent if timestamp - item['last'] <= 2500]
             available = candidates.copy()
+            frame_boxes = []
             for name, score, pixels in detections:
                 box = [round(max(0., min(1., value / size)), 5) for value, size in zip(pixels, (width, height, width, height))]
                 if box[2] <= box[0] or box[3] <= box[1]:
                     continue
+                frame_boxes.append({'class_name': name, 'bbox': box})
                 previous = max((item for item in available if item['name'] == name),
                                key=lambda item: _iou(box, item['bbox']), default=None)
                 if previous and _iou(box, previous['bbox']) >= .35:
@@ -266,16 +272,18 @@ def _process_video(task_id, video, predict, confidence):
                 found.append({'id': identifier, 'class_name': name, 'confidence': round(score, 3), 'bbox': box,
                               'frame_index': index, 'video_time_ms': timestamp, 'review_status': 'pending',
                               'model_run': run, 'evidence_file': evidence if ok else ''})
+            playback['frames'].append({'video_time_ms': timestamp, 'boxes': frame_boxes})
             recent = candidates
             progress = min(99, int(index / total * 100)) if total and math.isfinite(total) else 0
             if progress >= last_progress + 4 or timestamp % 5000 < 100:
-                _save_json(staging, found)
+                _save_json(staging, {'defects': found, 'playback': playback})
                 _save_json(progress_path, {'state': 'running', 'progress': progress})
                 last_progress = progress
             index += 1
         if not processed:
             raise ValueError('视频没有可检测的画面。')
         with REPORT_LOCK:
+            _save_json(report / 'detection-frames.json', playback)
             _save_json(report / 'defects.json', found)
             completed = True
             _save_json(progress_path, {'state': 'completed', 'progress': 100})
@@ -346,7 +354,8 @@ def get_roof_task(task_id: str):
 @router.get('/tasks/{task_id}/defects')
 def get_roof_defects(task_id: str):
     _task_dir(task_id)
-    return {'defects': [_public_defect(item, task_id) for item in _defects(task_id)]}
+    rows, playback = _results(task_id, include_playback=True)
+    return {'defects': [_public_defect(item, task_id) for item in rows], 'playback': playback}
 
 
 @router.get('/tasks/{task_id}/statistics')
