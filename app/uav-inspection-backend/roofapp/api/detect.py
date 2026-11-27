@@ -6,6 +6,7 @@ import math
 import shutil
 import uuid
 from datetime import datetime
+from io import BytesIO
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 from threading import Lock, RLock
@@ -15,6 +16,7 @@ from urllib.parse import quote
 import cv2
 import numpy as np
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, UploadFile
+from PIL import Image, UnidentifiedImageError
 from pydantic import BaseModel, Field
 
 from authapp.api import require_account
@@ -164,42 +166,100 @@ def get_roof_model():
     return runtime.model_status()
 
 
+MAX_MODEL_BYTES = 512 * 1024 * 1024
+MAX_PREVIEW_BYTES = 2 * 1024 * 1024
+
+
+def publish_model(path: Path, target: Path, *, overwrite: bool = True) -> bool:
+    size = path.stat().st_size
+    if size > MAX_MODEL_BYTES:
+        raise HTTPException(413, '模型文件不能超过 512 MB。')
+    if not size:
+        raise HTTPException(422, '模型文件为空。')
+    with JOB_LOCK:
+        if active_task:
+            raise HTTPException(409, '请等当前屋顶任务检测完成后再替换模型。')
+        if target.exists() and not overwrite:
+            return False
+        if target.suffix == '.onnx' or runtime.inference_dependencies_available():
+            try:
+                with runtime.MODEL_LOCK:
+                    runtime.build_predictor(path, target.suffix)(np.zeros((320, 320, 3), dtype=np.uint8), .25)
+            except ValueError as exc:
+                log.warning('Roof model upload validation failed: %s', exc)
+                raise HTTPException(422, str(exc)) from None
+            except Exception:
+                log.exception('Roof model upload validation failed')
+                raise HTTPException(422, '模型无法完成试运行，请检查权重格式和推理环境。') from None
+        path.replace(target)
+    return True
+
+
 @router.post('/model')
 def upload_roof_model(file: UploadFile = File(...), account=Depends(require_account)):
     suffix = Path(file.filename or '').suffix.lower()
     if suffix not in {'.pt', '.onnx'}:
         raise HTTPException(422, '请选择屋顶巡检专用 YOLO PT 或 ONNX 权重。')
+    if file.size is not None and file.size > MAX_MODEL_BYTES:
+        raise HTTPException(413, '模型文件不能超过 512 MB。')
     target = runtime.ONNX_MODEL if suffix == '.onnx' else runtime.PT_MODEL
     target.parent.mkdir(parents=True, exist_ok=True)
     with NamedTemporaryFile(dir=target.parent, suffix=suffix, delete=False) as output:
         path = Path(output.name)
         try:
-            size = 0
-            while chunk := file.file.read(1024 * 1024):
-                size += len(chunk)
-                if size > 512 * 1024 * 1024:
-                    raise HTTPException(413, '模型文件不能超过 512 MB。')
-                output.write(chunk)
+            shutil.copyfileobj(file.file, output)
             output.close()
-            if not size:
-                raise HTTPException(422, '模型文件为空。')
-            if suffix == '.onnx' or runtime.inference_dependencies_available():
-                try:
-                    with runtime.MODEL_LOCK:
-                        runtime.build_predictor(path)(np.zeros((320, 320, 3), dtype=np.uint8), .25)
-                except ValueError as exc:
-                    log.warning('Roof model upload validation failed: %s', exc)
-                    raise HTTPException(422, str(exc)) from None
-                except Exception:
-                    log.exception('Roof model upload validation failed')
-                    raise HTTPException(422, '模型无法完成试运行，请检查权重格式和推理环境。') from None
-            with JOB_LOCK:
-                if active_task:
-                    raise HTTPException(409, '请等当前屋顶任务检测完成后再替换模型。')
-                path.replace(target)
+            publish_model(path, target)
         finally:
             path.unlink(missing_ok=True)
     return runtime.model_status()
+
+
+def _frame_boxes(frame, detections):
+    height, width = frame.shape[:2]
+    for name, score, pixels in detections:
+        if not math.isfinite(score) or len(pixels) != 4 or not all(map(math.isfinite, pixels)):
+            continue
+        bounds = [round(max(0., min(1., value / size)), 5)
+                  for value, size in zip(pixels, (width, height, width, height))]
+        if bounds[2] > bounds[0] and bounds[3] > bounds[1]:
+            yield {'class_name': name, 'confidence': round(score, 3), 'bbox': bounds}
+
+
+@router.post('/detect-frame')
+def detect_roof_frame(image: UploadFile = File(...), confidence: float = Form(.30, ge=.05, le=.95),
+                      account=Depends(require_account)):
+    raw = image.file.read(MAX_PREVIEW_BYTES + 1)
+    if len(raw) > MAX_PREVIEW_BYTES:
+        raise HTTPException(413, '预览画面过大。')
+    try:
+        with Image.open(BytesIO(raw), formats=['JPEG']) as header:
+            if max(header.size) > 1280:
+                raise ValueError('Unsupported preview dimensions')
+            frame = cv2.imdecode(np.frombuffer(raw, np.uint8), cv2.IMREAD_COLOR)
+            if frame is None:
+                raise ValueError('Invalid JPEG')
+    except (UnidentifiedImageError, Image.DecompressionBombError, OSError, ValueError, cv2.error):
+        raise HTTPException(422, '无法读取预览画面，请重新播放录像。') from None
+    if not JOB_LOCK.acquire(blocking=False):
+        raise HTTPException(409, '屋顶检测正在处理，请稍后重试。')
+    try:
+        if active_task:
+            raise HTTPException(409, '整段检测正在运行，请等待完成。')
+        state = runtime.model_status()
+        if not state['ready']:
+            raise HTTPException(503, state['message'])
+        try:
+            with runtime.MODEL_LOCK:
+                predict = runtime.get_predictor(runtime.model_path())
+                return {'boxes': list(_frame_boxes(frame, predict(frame, confidence)))}
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from None
+        except Exception:
+            log.exception('Roof preview inference failed')
+            raise HTTPException(422, '当前画面识别失败，请检查模型与推理环境。') from None
+    finally:
+        JOB_LOCK.release()
 
 
 def _iou(first, second):
@@ -246,11 +306,9 @@ def _process_video(task_id, video, predict, confidence):
             candidates = [item for item in recent if timestamp - item['last'] <= 2500]
             available = candidates.copy()
             frame_boxes = []
-            for name, score, pixels in detections:
-                box = [round(max(0., min(1., value / size)), 5) for value, size in zip(pixels, (width, height, width, height))]
-                if box[2] <= box[0] or box[3] <= box[1]:
-                    continue
-                frame_boxes.append({'class_name': name, 'bbox': box})
+            for detection in _frame_boxes(frame, detections):
+                name, score, box = detection['class_name'], detection['confidence'], detection['bbox']
+                frame_boxes.append(detection)
                 previous = max((item for item in available if item['name'] == name),
                                key=lambda item: _iou(box, item['bbox']), default=None)
                 if previous and _iou(box, previous['bbox']) >= .35:
@@ -269,7 +327,7 @@ def _process_video(task_id, video, predict, confidence):
                 ok, jpeg = cv2.imencode('.jpg', thumbnail, [cv2.IMWRITE_JPEG_QUALITY, 82])
                 if ok:
                     write_atomic(report / evidence, jpeg.tobytes())
-                found.append({'id': identifier, 'class_name': name, 'confidence': round(score, 3), 'bbox': box,
+                found.append({'id': identifier, 'class_name': name, 'confidence': score, 'bbox': box,
                               'frame_index': index, 'video_time_ms': timestamp, 'review_status': 'pending',
                               'model_run': run, 'evidence_file': evidence if ok else ''})
             playback['frames'].append({'video_time_ms': timestamp, 'boxes': frame_boxes})

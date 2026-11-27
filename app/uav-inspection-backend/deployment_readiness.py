@@ -94,9 +94,9 @@ def module_status() -> dict[str, dict]:
         if not _paired_task(roof_tasks):
             roof_missing.append(requirement('在屋顶巡检页上传任务录像'))
         if not roof_model.is_file():
-            roof_missing.append(requirement('在屋顶巡检页上传 YOLO 权重'))
+            roof_missing.append(requirement('上传屋顶 YOLO 权重', 'roof-model'))
         elif roof_model.suffix == '.pt' and not dependencies:
-            roof_missing.append(requirement('安装服务器 AI 推理依赖，或上传兼容的 ONNX 权重'))
+            roof_missing.append(requirement('安装服务器 AI 推理依赖，或上传兼容的 ONNX 权重', 'roof-model'))
         entry('roof', '建筑屋顶巡检', '/roof', 'inference', roof_missing,
               '上传录像和对应的可选 SRT 字幕，添加模型后开始检测。')
 

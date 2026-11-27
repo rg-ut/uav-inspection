@@ -27,6 +27,8 @@ from deployment_paths import DATA_ROOT, backend_path
 from browser_video import store_video
 from authapp.api import require_account
 from plateapp import packages as plate_packages
+from roofapp import runtime as roof_runtime
+from roofapp.api import detect as roof_detect
 
 from assetsapp.readiness import router as readiness_router
 
@@ -52,6 +54,7 @@ CATEGORIES: dict[str, Path] = {
     'telecom-model': backend_path('telecomapp'),
     'power-model': backend_path('powerapp'),
     'wall-model': backend_path('wallapp'),
+    'roof-model': roof_runtime.MODEL_DIR,
     'pruning-model': backend_path('treeapp'),
     'rose-model': backend_path('roseapp'),
     'telecom-tasks': backend_path('telecom-tasks'),
@@ -81,15 +84,20 @@ def _video_target(category, name):
 
 
 def _target_name(category, name):
+    if category == 'roof-model':
+        return roof_runtime.ONNX_MODEL.name if Path(name).suffix.lower() == '.onnx' else roof_runtime.PT_MODEL.name
     return str(Path(name).with_suffix('.mp4')) if _video_target(category, name) else name
 
 
-def _publish(temporary, destination, category, name):
+def _publish(temporary, destination, category, name, overwrite):
+    if category == 'roof-model':
+        return roof_detect.publish_model(temporary, destination, overwrite=overwrite)
     if _video_target(category, name):
         with temporary.open('rb') as source:
             store_video(source, destination, name)
     else:
         temporary.replace(destination)
+    return True
 
 CATEGORY_HINTS = {
     plate_packages.CATEGORY: '每次选择一份交付 ZIP 或原始 .tar.gz。通过校验后启用该批次，上一批可恢复。',
@@ -99,7 +107,8 @@ CATEGORY_HINTS = {
     'wall-model': '可信 PT 权重需命名为 wall-damage-best.pt，并安装推理依赖；新版工作台也支持无需 PyTorch 的单类别 ONNX 模型，所有登录账号均可上传。',
     'telecom-tasks': '子目录填写任务编号，视频使用 H.264 MP4；SRT 字幕可选，仅定位与飞行数据显示需要字幕。模块内上传任务支持视频转码。',
     'rose-tasks': '子目录填写任务编号，视频使用 H.264 MP4；SRT 字幕可选，仅定位与飞行数据显示需要字幕。模块内上传任务支持视频转码。',
-    'roof-media': '子目录填写任务编号；屋顶模块展示离线结果，单独上传视频不会自动生成缺陷。',
+    'roof-media': '子目录填写任务编号。录像可在屋顶工作台播放，点击整段检测后生成缺陷记录。SRT 字幕可选。',
+    'roof-model': '上传 PT 或 ONNX，子目录留空。系统按格式保存为 roof-best.pt 或 roof-best.onnx，无需手动改名。PT 试运行需要服务器安装 AI 推理依赖。',
     'roof-reports': '子目录与屋顶视频的任务编号一致；上传 defects.json、telemetry.json 和可选 report.html。',
     'pest-data': '兼容旧回放接口的数据目录：视频放 media，轨迹 mock_track.json 放根目录，旧报告放 reports。新版玉米巡检工作台使用内置三维场景，无需配置这些回放文件。',
     'measurement-data': '结果放 task_01_xinxixueyuan_1 等任务子目录；点云 scene.json/scene.ply 放 pointcloud_web/任务编号。还需乔木实例数据及测量模型。',
@@ -130,6 +139,8 @@ def _safe_name(raw: str | None) -> str:
 
 
 def _validate_model_target(category: str, subdir: str, name: str) -> None:
+    if category == 'roof-model' and (_safe_subdir(subdir) != Path() or Path(name).suffix.lower() not in {'.pt', '.onnx'}):
+        raise HTTPException(422, '屋顶巡检模型支持 PT 和 ONNX，子目录必须留空。')
     expected = MODEL_FILENAMES.get(category)
     if expected and (_safe_subdir(subdir) != Path() or name != expected):
         raise HTTPException(status_code=422, detail=f'此分类仅接收 {expected}，子目录必须留空。')
@@ -146,6 +157,7 @@ async def list_categories():
                 'target': str(CATEGORIES[key].relative_to(DATA_ROOT)),
                 'expected_filename': MODEL_FILENAMES.get(key, 'renliu.pt' if key == 'heatmap-model' else ''),
                 'hint': CATEGORY_HINTS.get(key, ''),
+                **({'accept': '.pt,.onnx', 'root_only': True} if key == 'roof-model' else {}),
             }
             for key, label in (
                 ('heatmap-videos', '客流热力视频（heatmapdata/videos）'),
@@ -162,6 +174,7 @@ async def list_categories():
                 ('telecom-model', '通信基站模型 station2-best.pt'),
                 ('power-model', '杆路线路模型 wire-pole-seg.pt'),
                 ('wall-model', '建筑外墙模型 wall-damage-best.pt'),
+                ('roof-model', '建筑屋顶模型（PT / ONNX）'),
                 ('pruning-model', '乔木修剪模型 tree-pruning-best.pt'),
                 ('rose-model', '玫瑰检测模型 rose-detect-best.pt'),
                 ('telecom-tasks', '通信基站任务（视频 + SRT）'),
@@ -221,6 +234,8 @@ async def upload_assets(
         name = _safe_name(item.filename)
         _validate_model_target(category, subdir, name)
         destination = target_dir / _target_name(category, name)
+        if category == 'roof-model' and item.size is not None and item.size > roof_detect.MAX_MODEL_BYTES:
+            raise HTTPException(413, '模型文件不能超过 512 MB。')
         if destination.exists() and not overwrite:
             skipped.append({'name': name, 'reason': '已存在（未开启覆盖）'})
             await item.close()
@@ -231,11 +246,14 @@ async def upload_assets(
             try:
                 await asyncio.to_thread(shutil.copyfileobj, item.file, buffer)
                 buffer.close()
-                await asyncio.to_thread(_publish, temporary, destination, category, name)
+                published = await asyncio.to_thread(_publish, temporary, destination, category, name, overwrite)
             finally:
                 temporary.unlink(missing_ok=True)
                 await item.close()
-        saved.append({'name': name, 'size': destination.stat().st_size})
+        if published:
+            saved.append({'name': name, 'size': destination.stat().st_size})
+        else:
+            skipped.append({'name': name, 'reason': '已存在（未开启覆盖）'})
 
     return JSONResponse(status_code=200, content={
         'code': 200,
@@ -289,6 +307,8 @@ async def upload_init(
         if size > plate_packages.MAX_UPLOAD:
             raise HTTPException(413, '车牌巡检数据包不能超过 512 MB。')
     _validate_model_target(category, subdir, name)
+    if category == 'roof-model' and size > roof_detect.MAX_MODEL_BYTES:
+        raise HTTPException(413, '模型文件不能超过 512 MB。')
     target_dir = base / _safe_subdir(subdir)
     destination = target_dir / _target_name(category, name)
 
@@ -462,7 +482,7 @@ async def _complete_upload(workdir, upload_id, meta):
                         shutil.copyfileobj(src, out)
             if plate_package:
                 return plate_packages.activate(tmp_target, meta['filename'], upload_id)
-            _publish(tmp_target, destination, meta['category'], meta['filename'])
+            return _publish(tmp_target, destination, meta['category'], meta['filename'], meta['overwrite'])
         finally:
             tmp_target.unlink(missing_ok=True)
     batch = await asyncio.to_thread(merge)
@@ -475,4 +495,5 @@ async def _complete_upload(workdir, upload_id, meta):
         return {'code': 200, 'data': result}
     shutil.rmtree(workdir, ignore_errors=True)
     return {'code': 200, 'data': {'path': str(destination), 'size': destination.stat().st_size,
-                                  'chunks': total_chunks}}
+                                  'chunks': total_chunks,
+                                  **({'deduplicated': '已存在同名文件（未开启覆盖）'} if batch is False else {})}}

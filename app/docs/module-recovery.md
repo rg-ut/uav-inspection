@@ -95,9 +95,11 @@ Dockerfile 默认前端基路径已与 Compose 的 `/uav` 一致。根路径部�
 
 ### 屋顶、病虫害与数字玫瑰园
 
-- 屋顶当前**没有实时推理接口**：页面读取离线生成的缺陷、轨迹与报告。
-  `roof-media/任务编号` 放视频与可选字幕，`roof-reports/同一任务编号` 放
-  `defects.json`、`telemetry.json` 和可选 `report.html`。单独上传视频不会生成检测结果。
+- 屋顶录像可识别当前画面、播放时自动识别，也可整段检测并生成缺陷记录。
+  在素材上传中心选择「建筑屋顶模型（PT / ONNX）」，子目录留空。系统将权重保存到
+  `02-data/uav-inspection-backend/roofapp/` 的 `roof-best.pt` 或 `roof-best.onnx`。
+  ONNX 使用 640 输入、关闭内置 NMS 的 YOLO 检测导出。模型若包含类别名称，页面会显示原名称。
+  历史报告使用相同任务编号，原有 `defects.json`、`telemetry.json` 和 `report.html` 仍可回放。
 - 病虫害现使用玉米单株与密植离线包，提供 1/2/3 株场景及三种方式的九组仿真回放、
   照片与检测标记、指标、对比及 JSON 下载。素材随前端分发，无需视频、训练权重或旧模拟 Agent。
   原有 `pest-data` 分类、旧接口与任务工具仅作为兼容保留，不再由 `/pest` 使用。

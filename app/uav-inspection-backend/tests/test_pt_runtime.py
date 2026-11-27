@@ -58,9 +58,12 @@ class PTRuntimeTests(unittest.TestCase):
                 model.model.names = dict(enumerate(['杂草堆积', '屋面脱皮', '积水区域', '其他', '待核实']))
                 path = Path(folder) / 'roof.pt'
                 model.save(str(path))
-                uploaded = client.post('/api/v1/roof/model', files={'file': ('best.pt', path.read_bytes())})
+                uploaded = client.post('/api/v1/assets/upload', data={'category': 'roof-model'},
+                                       files={'files': ('best.pt', path.read_bytes())})
                 self.assertEqual(uploaded.status_code, 200, uploaded.text[:300])
-                self.assertTrue(uploaded.json()['ready'])
+                state = client.get('/api/v1/roof/model').json()
+                self.assertEqual(state['name'], 'roof-best.pt')
+                self.assertTrue(state['ready'])
                 invalid = client.post('/api/v1/roof/model', files={'file': ('invalid.pt', b'not a checkpoint')})
                 self.assertEqual(invalid.status_code, 422, invalid.text[:300])
                 check = client.post('/api/v1/assets/check/roof')
