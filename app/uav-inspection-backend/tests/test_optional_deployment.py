@@ -56,6 +56,8 @@ class OptionalDeploymentTests(unittest.TestCase):
         (cls.frontend_dist / "index.html").write_text(cls.frontend_html, encoding="utf-8")
         (cls.frontend_dist / "assets").mkdir()
         (cls.frontend_dist / "assets" / "app.js").write_text('console.log("fixture");', encoding="utf-8")
+        (cls.frontend_dist / "assets" / "js").mkdir()
+        (cls.frontend_dist / "assets" / "js" / "index-abc123.js").write_text('console.log("chunk");', encoding="utf-8")
         (Path(cls.temp.name) / "private-deploy-note.txt").write_text("DO NOT EXPOSE", encoding="utf-8")
         cls.env_patch = patch.dict(os.environ, {
             "UAV_DATA_DIR": str(cls.data_root),
@@ -201,6 +203,23 @@ class OptionalDeploymentTests(unittest.TestCase):
                 self.assertEqual(response.status_code, 404, response.text)
                 self.assertNotIn("DO NOT EXPOSE", response.text)
                 self.assertNotIn(self.frontend_html, response.text)
+
+    def test_07b_frontend_cache_headers_and_conditional_requests(self):
+        # 入口页（含 SPA 回退）每次必须重新验证；带内容哈希的 assets 产物可长期强缓存。
+        for route in ("/", "/roof", "/fendai-flower/"):
+            with self.subTest(route=route):
+                response = self.client.get(route)
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.headers["cache-control"], "no-cache")
+        asset = self.client.get("assets/app.js")
+        self.assertEqual(asset.headers["cache-control"], "public, max-age=31536000, immutable")
+        chunk = self.client.get("/assets/js/index-abc123.js")
+        self.assertEqual(chunk.status_code, 200)
+        self.assertEqual(chunk.headers["cache-control"], "public, max-age=31536000, immutable")
+        # 协商缓存：If-None-Match 命中 etag 返回 304，未命中返回完整内容。
+        etag = response.headers["etag"]
+        self.assertEqual(self.client.get("/roof", headers={"If-None-Match": etag}).status_code, 304)
+        self.assertEqual(self.client.get("/roof", headers={"If-None-Match": '"stale"'}).status_code, 200)
 
     def test_08_optional_static_picture_uses_external_data_root(self):
         from deployment_paths import project_path
