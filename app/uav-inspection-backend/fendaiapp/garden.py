@@ -164,11 +164,15 @@ def prepare_garden_model(source: Path) -> tuple[Path, int] | None:
         target = source.parent.parent / ".cache" / GARDEN_MODEL
         pending = None
         try:
+            expected_count = GARDEN["pointCount"]
+            expected_bytes = GARDEN["modelBytes"]
+            expected_digest = GARDEN["modelSha256"]
+            # The published scene can also be installed in its already-cropped form.
+            if _matches(source, expected_bytes, expected_digest):
+                return source, expected_count
             if not _matches(source, SOURCE_BYTES, SOURCE_SHA256):
                 return None
-            expected_count = GARDEN["pointCount"]
-            expected_digest = GARDEN["modelSha256"]
-            if _matches(target, GARDEN["modelBytes"], expected_digest):
+            if _matches(target, expected_bytes, expected_digest):
                 return target, expected_count
 
             data = source.read_bytes()

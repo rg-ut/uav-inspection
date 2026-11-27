@@ -8,9 +8,7 @@ import {
   CalendarDays,
   Camera,
   ChevronRight,
-  CircleCheck,
   ClipboardList,
-  Database,
   Droplets,
   Flower2,
   Gauge,
@@ -279,18 +277,7 @@ const allTasks = computed(() => plots.flatMap((plot) => plot.tasks.map((task) =>
             <ArrowLeft :size="18" />
           </button>
           <div class="min-w-0">
-            <div class="flex flex-wrap items-center gap-2">
-              <span class="inline-flex items-center gap-1 rounded-lg border border-rose-200 bg-rose-50 px-2.5 py-1 text-xs font-semibold text-rose-700">
-                <Database :size="14" />
-                内置示例档案
-              </span>
-              <span class="inline-flex items-center gap-1 rounded-lg border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-xs font-semibold text-emerald-700">
-                <CircleCheck :size="14" />
-                {{ plots.length }} 个示例地块
-              </span>
-            </div>
-            <h1 class="mt-1 text-2xl font-bold text-slate-950">数字玫瑰园</h1>
-            <p class="mt-1 text-xs text-slate-500">演示数据，不代表实时监测结果；无需视频数据包即可浏览。</p>
+            <h1 class="text-2xl font-bold text-slate-950">数字玫瑰园</h1>
           </div>
         </div>
         <div class="grid grid-cols-2 gap-2 text-sm sm:grid-cols-4">
@@ -322,7 +309,7 @@ const allTasks = computed(() => plots.flatMap((plot) => plot.tasks.map((task) =>
               <MapPinned :size="18" class="text-rose-600" />
               地块列表
             </div>
-            <span class="rounded-lg border border-slate-200 bg-slate-50 px-2 py-1 text-xs text-slate-500">示例档案</span>
+            <span class="text-xs text-slate-500">{{ plots.length }} 个地块</span>
           </div>
           <div class="grid gap-2">
             <button
